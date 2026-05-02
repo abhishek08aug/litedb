@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+env/
+venv/
+.venv/
+pip-wheel-metadata/
+
+# LiteDB runtime data
+litedb/data/
+*.wal
+*.sst
+*.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
