@@ -1,14 +1,10 @@
 # Deep Dive: Database Locks and Concurrency Control
 
-Excellent question! This is one of the most critical mechanisms in databases. Let me explain how locks prevent concurrent transactions from corrupting data.
+Locking is one of the most critical mechanisms in databases. This document describes how locks prevent concurrent transactions from corrupting data.
 
-## Your Question
+## Overview
 
-> "How do locks work in databases to ensure no two transactions can change the same row?"
-
-**Short Answer:** Databases use **locks** to control access to data. When a transaction wants to modify a row, it acquires a lock on that row, preventing other transactions from modifying it until the lock is released.
-
-But there's much more to it! Let's dive deep.
+Databases use **locks** to control access to data. When a transaction modifies a row, it acquires a lock on that row, preventing other transactions from modifying it until the lock is released. The sections below trace the full mechanism, from lock types through deadlocks, two-phase locking, and MVCC.
 
 ---
 
@@ -63,7 +59,7 @@ COMMIT
 Same query returns different results within one transaction!
 ```
 
-**Locks solve all these problems!**
+Locks address all of these problems.
 
 ---
 
@@ -202,7 +198,7 @@ Coarse-grained: Low concurrency, low overhead
 
 ## How Locks Work: Step-by-Step
 
-Let's trace two concurrent transactions:
+The following traces of two concurrent transactions illustrate the mechanism.
 
 ### Scenario: Two Transactions Updating Different Rows
 
@@ -515,7 +511,7 @@ Transaction reads appropriate version based on:
 
 **Used by:** PostgreSQL, MySQL InnoDB, Oracle, SQL Server
 
-**We'll cover MVCC in detail in Module 6!**
+MVCC is covered in detail in Module 6.
 
 ---
 
@@ -548,7 +544,7 @@ COMMIT;  -- Release all locks
 -- Transaction 1: Reserve a seat
 BEGIN;
 
--- Explicitly acquire X-lock (even though it's a SELECT!)
+-- Explicitly acquire X-lock (even on a SELECT)
 SELECT * FROM seats 
 WHERE seat_number = 'A1' 
 FOR UPDATE;
@@ -611,10 +607,10 @@ ROLLBACK;
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
 **Question 1:** Can two transactions hold shared locks on the same row simultaneously?
-**Answer:** YES! Shared locks are compatible with each other.
+**Answer:** Yes. Shared locks are compatible with each other.
 
 **Question 2:** What happens if Transaction A holds an exclusive lock and Transaction B tries to acquire a shared lock on the same row?
 **Answer:** Transaction B blocks (waits) until Transaction A releases the exclusive lock.
@@ -624,4 +620,4 @@ ROLLBACK;
 
 ---
 
-This is a fundamental concept! We'll explore this more in Module 6 (Concurrency Control) where we'll cover MVCC, isolation levels, and advanced locking strategies. Ready for more questions?
+Locking is a fundamental concept. Module 6 (Concurrency Control) covers it further, including MVCC, isolation levels, and advanced locking strategies.

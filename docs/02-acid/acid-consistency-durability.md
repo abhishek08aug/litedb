@@ -1,6 +1,6 @@
 # Module 2: Complete ACID Properties - Consistency & Durability
 
-We've already covered **Atomicity** (A) and **Isolation** (I) in depth. Now let's complete the picture with **Consistency** (C) and **Durability** (D).
+**Atomicity** (A) and **Isolation** (I) are covered in depth in Module 1. This module completes the picture with **Consistency** (C) and **Durability** (D).
 
 ---
 
@@ -101,7 +101,7 @@ CREATE TABLE employees (
 );
 ```
 
-#### 2. Application-Level Consistency (Enforced by Your Code)
+#### 2. Application-Level Consistency (Enforced by Application Code)
 
 Some rules are too complex for the database to enforce:
 
@@ -225,7 +225,7 @@ Data MUST survive:
     ✓ Hardware failure (with proper setup)
 ```
 
-We covered the basics in Module 1 (WAL + fsync). Now let's go deeper.
+The basics (WAL + fsync) are introduced in Module 1. The sections below go deeper.
 
 ---
 
@@ -259,7 +259,7 @@ Layer 5: Geographic Distribution
 
 ### Layer 1: WAL (Write-Ahead Log) - Deep Dive
 
-We know WAL records changes before applying them. Let's understand the structure:
+WAL records changes before applying them. Its structure is as follows:
 
 ```
 WAL File Structure:
@@ -456,7 +456,7 @@ ARIES ensures correctness regardless of when pages are flushed!
 
 ## Putting It All Together: ACID in Action
 
-Let's trace a complete bank transfer through all ACID properties:
+The following traces a complete bank transfer through all four ACID properties:
 
 ```sql
 BEGIN;
@@ -548,7 +548,7 @@ Redis:
 More ACID guarantees = More overhead = Lower performance
 Less ACID guarantees = Less overhead = Higher performance
 
-Choose based on your use case:
+Choose based on the use case:
 - Financial systems: Full ACID required
 - Social media feeds: Can relax some guarantees
 - Analytics: Eventual consistency often fine
@@ -556,10 +556,10 @@ Choose based on your use case:
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
 **Question 1:** What's the difference between database-level and application-level consistency?
-**Answer:** Database-level consistency is enforced by constraints (PK, FK, CHECK). Application-level consistency is enforced by your code (business rules like "balance can't go negative" beyond what CHECK constraints cover).
+**Answer:** Database-level consistency is enforced by constraints (PK, FK, CHECK). Application-level consistency is enforced by application code (business rules like "balance can't go negative" beyond what CHECK constraints cover).
 
 **Question 2:** Why do databases use checkpoints?
 **Answer:** To limit recovery time after a crash. Without checkpoints, the database would need to replay the entire WAL history. Checkpoints create a "safe point" from which recovery can start.
@@ -574,7 +574,7 @@ Choose based on your use case:
 
 **Next Up: Module 3 - Storage Engine Internals**
 
-We'll explore:
+Topics covered:
 - How data is physically stored on disk
 - B-Trees: The data structure powering most SQL databases
 - LSM Trees: The data structure powering Cassandra, RocksDB, LevelDB

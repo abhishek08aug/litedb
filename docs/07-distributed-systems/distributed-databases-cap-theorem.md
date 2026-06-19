@@ -1,6 +1,6 @@
 # Module 7: Distributed Databases & CAP Theorem
 
-When a single machine can no longer handle your data or traffic, you go distributed. This module covers the fundamental theory and real-world trade-offs of distributed databases.
+When a single machine can no longer handle the data or traffic, a system goes distributed. This module covers the fundamental theory and real-world trade-offs of distributed databases.
 
 ---
 
@@ -19,7 +19,7 @@ Solutions:
 
   Scale OUT (horizontal): More machines working together
                           → Theoretically unlimited scale
-                          → But introduces new problems!
+                          → But introduces new problems
 ```
 
 **New problems in distributed systems:**
@@ -57,7 +57,7 @@ Proposed by Eric Brewer (2000), proved by Gilbert & Lynch (2002):
 Every read receives the most recent write or an error.
 All nodes see the same data at the same time.
 
-NOT the same as ACID consistency!
+NOT the same as ACID consistency.
 CAP-C = "linearizability" or "strong consistency"
 ```
 
@@ -89,7 +89,7 @@ Therefore: P is mandatory.
 Real choice is between C and A during a partition.
 
 CA systems: Only work if there's never a partition
-            → Only possible on a single machine!
+            → Only possible on a single machine
             → Not truly distributed.
 ```
 
@@ -140,7 +140,7 @@ PACELC:
 Full form: PAC-ELC
 
 During partition:  A vs C  (same as CAP)
-During normal op:  L vs C  (new insight!)
+During normal op:  L vs C  (the added dimension)
 ```
 
 **Why latency vs consistency matters:**
@@ -234,7 +234,7 @@ If no new updates are made, all replicas will eventually
 converge to the same value.
 
 No guarantee on WHEN they converge.
-No guarantee on what you read in the meantime.
+No guarantee on what is read in the meantime.
 
 Used by: Cassandra, DynamoDB, DNS
 ```
@@ -256,7 +256,7 @@ Node C says: "I'm the leader!"
 
 Network partition: A can't talk to B or C
 
-Who wins? How do we prevent split-brain?
+Who wins? How is split-brain prevented?
 (Split-brain = two nodes both think they're leader → data corruption)
 ```
 
@@ -367,8 +367,8 @@ Result:
   Globally consistent reads across continents
   At the cost of: 7ms commit latency (waiting for TrueTime)
 
-Lesson: You CAN have strong consistency globally,
-        but you pay in latency, not availability.
+Lesson: Strong consistency IS achievable globally,
+        but the cost is paid in latency, not availability.
 ```
 
 ---
@@ -427,16 +427,16 @@ Raft:
   Log replication to quorum before commit
   Leader election on failure
 
-Choose based on your invariants:
-  "Can I serve stale data?" → AP
+Choose based on the system's invariants:
+  "Can stale data be served?" → AP
   "Must data always be correct?" → CP
 ```
 
 ---
 
-**Next Up: Module 8 — Sharding & Partitioning**
+**Next: Module 8 — Sharding & Partitioning**
 
-We'll explore:
+Topics covered:
 - Horizontal partitioning: how to split data across nodes
 - Range sharding vs Hash sharding vs Directory-based
 - Consistent hashing (how Cassandra and DynamoDB do it)

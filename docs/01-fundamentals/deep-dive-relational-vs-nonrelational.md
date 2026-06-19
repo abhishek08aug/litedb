@@ -1,6 +1,6 @@
 # Deep Dive: Relational vs Non-Relational Databases
 
-Great question! Let's understand what fundamentally makes a database "relational" versus "non-relational."
+This document explains what fundamentally makes a database "relational" versus "non-relational."
 
 ## What Makes a Database "Relational"?
 
@@ -71,7 +71,7 @@ BEGIN TRANSACTION;
   UPDATE accounts SET balance = balance + 100 WHERE user_id = 2;
 COMMIT;
 ```
-Either both updates happen, or neither does. No partial state!
+Either both updates happen, or neither does. There is no partial state.
 
 ### 4. Schema Enforcement
 
@@ -92,7 +92,7 @@ CREATE TABLE Users (
 - `Email` must be unique
 - `Age` must be non-negative
 
-If you try to insert data that violates these rules, the database rejects it!
+Any attempt to insert data that violates these rules is rejected by the database.
 
 ### 5. SQL (Structured Query Language)
 
@@ -106,7 +106,7 @@ INNER JOIN Posts ON Users.UserID = Posts.UserID
 WHERE Users.Age > 30;
 ```
 
-SQL is **declarative**: You say *what* you want, not *how* to get it.
+SQL is **declarative**: it specifies *what* result is required, not *how* to obtain it.
 
 ---
 
@@ -197,7 +197,7 @@ Row Key: "user1"
 
 #### 3. Eventual Consistency (Often)
 
-Many NoSQL databases trade **strong consistency** for **availability** and **partition tolerance** (CAP theorem - we'll cover this later!).
+Many NoSQL databases trade **strong consistency** for **availability** and **partition tolerance** (CAP theorem, covered in a later module).
 
 **Example:**
 ```
@@ -316,7 +316,7 @@ WHERE c.CustomerID = 1;
   ]
 }
 
-// Single query - no JOINs needed!
+// Single query - no JOINs needed
 db.customers.findOne({"_id": "customer1"})
 ```
 
@@ -326,7 +326,7 @@ db.customers.findOne({"_id": "customer1"})
 
 ### Use Relational (SQL) When:
 - ✅ Data has clear relationships and structure
-- ✅ You need strong ACID guarantees (banking, finance)
+- ✅ Strong ACID guarantees are required (banking, finance)
 - ✅ Complex queries with JOINs are common
 - ✅ Data integrity is critical
 - ✅ Schema is stable and well-defined
@@ -360,7 +360,7 @@ E-Commerce Application
     └── Product search (full-text search)
 ```
 
-This is called **polyglot persistence**: Using the right database for each job!
+This is called **polyglot persistence**: using the right database for each job.
 
 ---
 
@@ -378,13 +378,11 @@ This is called **polyglot persistence**: Using the right database for each job!
 3. Often eventual consistency
 4. Optimized for specific use cases
 
-Neither is "better" - they solve different problems!
+Neither is "better"; they solve different problems.
 
 ---
 
-**Questions to test your understanding:**
+**Review questions:**
 1. Why might a social media app use NoSQL for posts but SQL for payments?
-2. What's the trade-off of embedding data (denormalization) in NoSQL?
-3. Can you think of a scenario where you'd need both SQL and NoSQL?
-
-Ready to explore more, or shall we move to Module 2?
+2. What is the trade-off of embedding data (denormalization) in NoSQL?
+3. In what scenario would a system need both SQL and NoSQL?

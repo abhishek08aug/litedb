@@ -1,6 +1,6 @@
 # Module 4: Indexing Deep Dive
 
-Indexes are the single most impactful tool for database performance. A query that takes 10 minutes without an index can take 10 milliseconds with one. But indexes also have costs — let's understand everything.
+Indexes are the single most impactful tool for database performance. A query that takes 10 minutes without an index can take 10 milliseconds with one. Indexes also carry costs, which the sections below cover in full.
 
 ---
 
@@ -138,7 +138,7 @@ Rule: Must start from the leftmost column.
       Can skip trailing columns but NOT leading ones.
 ```
 
-**Why?** Because the index is sorted by `last_name` first. Without knowing `last_name`, you can't navigate the B+ Tree — you'd have to scan the whole thing.
+**Why?** Because the index is sorted by `last_name` first. Without knowing `last_name`, the B+ Tree cannot be navigated — the whole structure would have to be scanned.
 
 ---
 
@@ -190,7 +190,7 @@ Benefits:
   ✓ Faster to build and maintain
   ✓ Fits better in buffer pool cache
 
-Use case: If 90% of rows are 'deleted' and you only query 'active',
+Use case: If 90% of rows are 'deleted' and only 'active' rows are queried,
           a partial index is 10x smaller and faster.
 ```
 
@@ -347,7 +347,7 @@ SELECT * FROM users WHERE name LIKE 'alice%';
 ## Index Design Strategy
 
 ```
-Step 1: Identify your most frequent / slowest queries
+Step 1: Identify the most frequent / slowest queries
 Step 2: Look at WHERE, JOIN ON, ORDER BY, GROUP BY columns
 Step 3: Apply the rules:
 
@@ -389,8 +389,8 @@ Optimal index:
 
 **Next Up: Module 5 — Query Processing & Optimization**
 
-We'll explore:
-- How the database parses and plans your SQL query
+Topics covered:
+- How the database parses and plans a SQL query
 - The query optimizer: cost-based vs rule-based
 - Join algorithms: Nested Loop, Hash Join, Merge Join
 - EXPLAIN / EXPLAIN ANALYZE — reading query plans

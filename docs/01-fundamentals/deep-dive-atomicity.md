@@ -1,6 +1,6 @@
 # Deep Dive: How Databases Support Atomicity
 
-Excellent question! Atomicity is one of the most critical properties of databases. Let's understand how it works under the hood.
+Atomicity is one of the most critical properties of databases. The sections below describe how it works under the hood.
 
 ## What is Atomicity?
 
@@ -8,16 +8,16 @@ Excellent question! Atomicity is one of the most critical properties of database
 - Either **all operations** in a transaction succeed, or
 - **None of them** take effect
 
-Think of it like a bank transfer:
+A bank transfer illustrates the concept:
 ```
 Transaction: Transfer $100 from Alice to Bob
   Step 1: Deduct $100 from Alice's account
   Step 2: Add $100 to Bob's account
 ```
 
-**Without atomicity:** If the system crashes after Step 1, Alice loses $100 but Bob doesn't receive it! 💸
+**Without atomicity:** If the system crashes after Step 1, Alice loses $100 but Bob does not receive it.
 
-**With atomicity:** Either both steps complete, or neither does. No money disappears!
+**With atomicity:** Either both steps complete, or neither does. No money disappears.
 
 ---
 
@@ -179,13 +179,13 @@ Coordinator: "Everyone ROLLBACK!"
 All databases: Rollback ✓
 ```
 
-This ensures atomicity across multiple databases!
+This ensures atomicity across multiple databases.
 
 ---
 
 ## Real Example: PostgreSQL's Atomicity Implementation
 
-Let's trace a real transaction in PostgreSQL:
+The following traces a real transaction in PostgreSQL:
 
 ```sql
 BEGIN;
@@ -236,13 +236,13 @@ COMMIT;
    - Can happen minutes later!
 ```
 
-**Key insight:** The COMMIT is considered successful once the WAL is on disk, even if data pages aren't written yet!
+**Key insight:** The COMMIT is considered successful once the WAL is on disk, even if data pages are not written yet.
 
 ---
 
 ## How NoSQL Databases Handle Atomicity
 
-NoSQL databases have **varying levels** of atomicity support:
+NoSQL databases have **varying levels** of atomicity support.
 
 ### 1. MongoDB (Document Store)
 
@@ -314,7 +314,7 @@ UPDATE accounts SET balance = balance + 100 WHERE user_id = 'bob';
 -- If crash happens between these, data is inconsistent!
 ```
 
-**Why?** Cassandra prioritizes **availability** over consistency (AP in CAP theorem).
+**Reason:** Cassandra prioritizes **availability** over consistency (AP in CAP theorem).
 
 **Workaround: Lightweight Transactions (LWT)**
 ```sql
@@ -325,7 +325,7 @@ WHERE user_id = 'alice'
 IF balance = 500;  -- Conditional update
 ```
 
-But LWT is **slow** and defeats Cassandra's performance benefits!
+However, LWT is **slow** and defeats Cassandra's performance benefits.
 
 ### 3. Redis (Key-Value Store)
 
@@ -349,7 +349,7 @@ EXEC
 ```
 
 **How Redis implements atomicity:**
-- **Single-threaded** event loop (no concurrency issues!)
+- **Single-threaded** event loop (no concurrency issues)
 - MULTI/EXEC creates a transaction queue
 - All commands execute atomically when EXEC is called
 
@@ -436,7 +436,7 @@ await dynamodb.transactWriteItems({
 4. Later: Flush data to disk
 ```
 
-This ensures that even if the system crashes, we can:
+This ensures that even if the system crashes, the database can:
 - **REDO** committed transactions (replay from log)
 - **UNDO** uncommitted transactions (rollback from log)
 
@@ -444,7 +444,7 @@ This ensures that even if the system crashes, we can:
 
 ## Practical Example: Building a Simple Atomic Operation
 
-Here's pseudocode showing how you might implement atomicity:
+The following pseudocode shows one way to implement atomicity:
 
 ```python
 class Transaction:
@@ -490,9 +490,8 @@ class Transaction:
 
 ---
 
-**Questions to test your understanding:**
+## Review Questions
+
 1. Why must the WAL be written to disk before returning success to the client?
 2. What happens if a crash occurs between writing two operations to the WAL but before COMMIT?
 3. Why can NoSQL databases like Cassandra sacrifice multi-row atomicity?
-
-Ready for more questions, or shall we move to Module 2 where we'll explore all ACID properties in depth?

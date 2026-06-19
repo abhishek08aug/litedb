@@ -1,20 +1,20 @@
-# Deep Dive: The Commit Guarantee - What If WAL Isn't Flushed?
+# Deep Dive: The Commit Guarantee - What If the WAL Isn't Flushed?
 
-Excellent question! This gets to the heart of database durability guarantees. Let me clarify this critical concept.
+This topic gets to the heart of database durability guarantees.
 
-## Your Question
+## The Question
 
-> "What if a transaction commits but the WAL is not flushed to the disk, and db crashes, meanwhile the client will have uncommitted value?"
+> What if a transaction commits but the WAL is not flushed to disk, and the database crashes — does the client end up holding an uncommitted value?
 
-**Short Answer:** This scenario **CANNOT happen** in a properly implemented database!
+**Short Answer:** This scenario **cannot happen** in a properly implemented database.
 
-**Why?** Because the database **NEVER** returns "commit successful" to the client until the WAL is safely on disk.
+**Reason:** The database **never** returns "commit successful" to the client until the WAL is safely on disk.
 
 ---
 
-## The Commit Protocol: The Sacred Contract
+## The Commit Protocol
 
-Here's the **ironclad rule** that all ACID-compliant databases follow:
+All ACID-compliant databases follow this rule:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -28,13 +28,13 @@ Here's the **ironclad rule** that all ACID-compliant databases follow:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-This is called **durability** - the "D" in ACID!
+This is called **durability** - the "D" in ACID.
 
 ---
 
 ## What Actually Happens During COMMIT
 
-Let's trace the exact sequence:
+The exact sequence is as follows:
 
 ```sql
 BEGIN;
@@ -75,11 +75,11 @@ Client sends: COMMIT
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Point:** The database **blocks** at Step 2 until fsync() completes. The client doesn't receive success until the WAL is safely on disk!
+**Key Point:** The database **blocks** at Step 2 until fsync() completes. The client does not receive success until the WAL is safely on disk.
 
 ---
 
-## The fsync() System Call: The Durability Guardian
+## The fsync() System Call
 
 ```c
 // Pseudocode of what happens inside the database
@@ -106,13 +106,13 @@ int commit_transaction(Transaction* txn) {
 - Waits for disk controller to confirm write
 - Returns only when data is on physical platters
 
-**This is why commits can be slow!** Each commit requires a disk write.
+This is why commits can be slow: each commit requires a disk write.
 
 ---
 
 ## Scenario Analysis: Can the Client Get Wrong Information?
 
-Let's examine all possible scenarios:
+The possible scenarios are examined below.
 
 ### Scenario 1: Crash BEFORE fsync() completes
 
@@ -184,7 +184,7 @@ Recovery:
 Result: ✅ CORRECT - Everything consistent
 ```
 
-### ❌ Scenario 4: Your Concern - Can This Happen?
+### ❌ Scenario 4: The Concern - Can This Happen?
 
 ```
 Timeline:
@@ -193,22 +193,22 @@ T2: Database returns "SUCCESS" to client ❌
 T3: Database tries to fsync()
 T4: [CRASH!] - Before fsync() completes
 
-Your concern: Client has success, but WAL not on disk!
+The concern: Client has success, but WAL not on disk!
 ```
 
-**Answer: This CANNOT happen in a correct database implementation!**
+**Answer: This cannot happen in a correct database implementation.**
 
-**Why?** Because Step 2 and Step 3 are in the wrong order. A correct database MUST:
+**Reason:** Step 2 and Step 3 are in the wrong order. A correct database must:
 1. fsync() first
 2. Return success second
 
-If a database returned success before fsync(), it would be **violating the ACID durability guarantee** and would be considered buggy!
+A database that returned success before fsync() would be **violating the ACID durability guarantee** and would be considered buggy.
 
 ---
 
 ## Real-World Example: PostgreSQL's Commit Process
 
-Let's look at actual PostgreSQL code flow (simplified):
+The actual PostgreSQL code flow (simplified) looks like this:
 
 ```c
 // PostgreSQL commit process (simplified)
@@ -229,7 +229,7 @@ bool CommitTransaction(void) {
 }
 ```
 
-**Key observation:** `XLogFlush()` (which does fsync) happens BEFORE returning true!
+**Key observation:** `XLogFlush()` (which does fsync) happens BEFORE returning true.
 
 ---
 
@@ -249,7 +249,7 @@ With fsync (SAFE):
 - Throughput: ~100-200 commits/second
 ```
 
-**This is why commits are slow!** Each commit requires a physical disk write.
+This is why commits are slow: each commit requires a physical disk write.
 
 ### Optimization: Group Commit
 
@@ -274,13 +274,13 @@ Database batches them:
 All 4 clients receive success together
 ```
 
-**Benefit:** Amortize the cost of fsync across multiple transactions!
+**Benefit:** Amortize the cost of fsync across multiple transactions.
 
 ---
 
 ## Configuration Options (Trade-offs)
 
-Some databases allow you to weaken durability for performance:
+Some databases allow durability to be weakened for performance:
 
 ### PostgreSQL: synchronous_commit
 
@@ -301,7 +301,7 @@ T2: Database returns "SUCCESS" immediately ⚠️
 T3: Database writes to WAL buffer
 T4: [CRASH!] - Before fsync()
 
-Result: ❌ Client thinks commit succeeded, but data is lost!
+Result: ❌ Client thinks commit succeeded, but data is lost
 ```
 
 **When to use async commit:**
@@ -343,7 +343,7 @@ SET GLOBAL innodb_flush_log_at_trx_commit = 0;  -- Can lose data
 │  2. Calling fsync() to flush to disk                        │
 │  3. ONLY THEN returning success to client                   │
 │                                                             │
-│  The database BLOCKS during fsync() - this is intentional!  │
+│  The database BLOCKS during fsync() - this is intentional   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -351,7 +351,7 @@ SET GLOBAL innodb_flush_log_at_trx_commit = 0;  -- Can lose data
 
 ## What About Network Failures?
 
-There's one edge case to consider:
+There is one edge case to consider:
 
 ```
 Timeline:
@@ -373,7 +373,7 @@ State:
   - Query to check if transaction succeeded
   - Use idempotency tokens
 
-**This is NOT a database bug** - it's an inherent distributed systems problem!
+**This is not a database bug** - it is an inherent distributed systems problem.
 
 ---
 
@@ -394,25 +394,25 @@ State:
 4. **Commits are slow because of fsync()**
    - Typical: 5-10ms per commit
    - Optimized with group commit
-   - Can be weakened for performance (risky!)
+   - Can be weakened for performance (risky)
 
-5. **Your scenario CANNOT happen in correct implementation**
+5. **The concern scenario cannot happen in a correct implementation**
    - Client getting success with WAL not flushed = bug
    - Would violate ACID durability guarantee
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
 **Question 1:** Why does the database block during fsync() instead of returning success immediately?
 **Answer:** To guarantee durability - if it returned success before fsync(), a crash could lose committed data.
 
 **Question 2:** What happens if fsync() fails (disk error)?
-**Answer:** The database returns an error to the client - the commit fails. Better to fail than to lie about durability!
+**Answer:** The database returns an error to the client - the commit fails. Failing is preferable to misreporting durability.
 
-**Question 3:** Can a transaction be committed in the database but the client doesn't know?
-**Answer:** Yes! If the network fails after fsync() but before the client receives the response. This is "uncertain commit."
+**Question 3:** Can a transaction be committed in the database without the client knowing?
+**Answer:** Yes, if the network fails after fsync() but before the client receives the response. This is an "uncertain commit."
 
 ---
 
-Does this clarify the commit guarantee? The key insight is that **durability is enforced by the order of operations** - fsync() MUST complete before returning success to the client!
+The key insight is that **durability is enforced by the order of operations** - fsync() must complete before returning success to the client.

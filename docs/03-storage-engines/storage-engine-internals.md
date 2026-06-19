@@ -1,6 +1,6 @@
 # Module 3: Storage Engine Internals — B-Trees & LSM Trees
 
-This is where databases get really interesting. The **storage engine** is the heart of any database — it decides how data is physically laid out on disk, how fast reads/writes are, and what trade-offs you make.
+The **storage engine** is the heart of any database. It determines how data is physically laid out on disk, how fast reads and writes are, and what trade-offs apply.
 
 ---
 
@@ -418,7 +418,7 @@ Every storage engine must balance three amplifications:
   Read              Space
   Amplification     Amplification
 
-You can optimize for at most TWO of the three.
+A storage engine can optimize for at most TWO of the three.
 
 B+ Tree:   Low read amp  + Low write amp  → Higher space amp
 LSM Tree:  Low write amp + Low space amp  → Higher read amp
@@ -443,7 +443,7 @@ LSM Tree:  Low write amp + Low space amp  → Higher read amp
 - Reads must check multiple files → slower
 - Best for: write-heavy workloads, time-series, event logs
 
-### Choose based on your workload:
+### Choosing based on workload:
 ```
 Read-heavy?   → B+ Tree (PostgreSQL, MySQL)
 Write-heavy?  → LSM Tree (Cassandra, RocksDB)
@@ -452,7 +452,7 @@ Mixed?        → B+ Tree with tuning, or hybrid engines
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
 **Q1:** Why does a B+ Tree with branching factor 1000 only need 3 levels for 1 billion rows?
 **A:** log₁₀₀₀(1,000,000,000) = 3. Each level multiplies capacity by 1000.
@@ -461,7 +461,7 @@ Mixed?        → B+ Tree with tuning, or hybrid engines
 **A:** LSM writes are always sequential (WAL + MemTable flush). B+ Tree writes are random I/O (must find and modify specific pages on disk).
 
 **Q3:** What is a Bloom Filter and why does LSM Tree need it?
-**A:** A probabilistic data structure that answers "is this key in this file?" with zero false negatives. LSM Trees need it because a key might be in any of many SSTable files — Bloom Filters let you skip files that definitely don't contain the key.
+**A:** A probabilistic data structure that answers "is this key in this file?" with zero false negatives. LSM Trees need it because a key might be in any of many SSTable files — Bloom Filters allow skipping files that definitely don't contain the key.
 
 **Q4:** What is compaction and why is it necessary?
 **A:** Compaction merges multiple SSTable files into one, keeping only the latest version of each key and removing tombstones. Without it, reads would get slower over time as more files accumulate.
@@ -470,7 +470,7 @@ Mixed?        → B+ Tree with tuning, or hybrid engines
 
 **Next Up: Module 4 — Indexing Deep Dive**
 
-We'll explore:
+Topics covered:
 - How indexes are built on top of B+ Trees
 - Primary vs Secondary indexes
 - Composite indexes and how query planners use them

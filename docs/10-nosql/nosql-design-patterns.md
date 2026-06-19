@@ -1,6 +1,6 @@
 # Module 10: NoSQL Design Patterns
 
-NoSQL databases aren't just "SQL without the SQL" — they require a fundamentally different way of thinking about data modeling. The core shift: **model your data around your queries, not around your entities**.
+NoSQL databases are not simply "SQL without the SQL" — they require a fundamentally different way of thinking about data modeling. The core shift is to **model data around its queries, not around its entities**.
 
 ---
 
@@ -30,7 +30,7 @@ NoSQL databases aren't just "SQL without the SQL" — they require a fundamental
 
 ### SQL (Relational) Approach
 ```
-1. Model your entities (normalize data)
+1. Model the entities (normalize data)
 2. Define relationships (foreign keys)
 3. Write queries to join them at read time
 
@@ -39,8 +39,8 @@ Schema first, queries later.
 
 ### NoSQL Approach
 ```
-1. Define your access patterns (what queries will you run?)
-2. Model your data to serve those queries directly
+1. Define the access patterns (which queries will run?)
+2. Model the data to serve those queries directly
 3. Denormalize aggressively
 
 Queries first, schema follows.
@@ -246,7 +246,7 @@ Rule 2: Denormalize aggressively
   Storage is cheap. Cross-partition queries are expensive.
 
 Rule 3: One table per query pattern
-  If you have 3 different access patterns → 3 tables (possibly)
+  3 distinct access patterns → 3 tables (possibly)
 
 Rule 4: Avoid unbounded partitions
   A partition that grows forever → performance degrades
@@ -325,7 +325,7 @@ CREATE TABLE comments_by_post (
 
 ## Graph Databases (Neo4j)
 
-When your data IS the relationships:
+Graph databases apply when the relationships themselves are the data:
 
 ```
 SQL for "friends of friends who like the same movies":
@@ -453,9 +453,9 @@ Polyglot persistence:
 
 ---
 
-**Next Up: Module 11 — Build Our Own Database (Final Project)**
+**Next: Module 11 — Build a Database (Final Project)**
 
-We've learned everything we need. Now we build:
+The final module builds:
 - A simple key-value store with a WAL for durability
 - An LSM-Tree storage engine (like LevelDB/RocksDB)
 - A basic query parser

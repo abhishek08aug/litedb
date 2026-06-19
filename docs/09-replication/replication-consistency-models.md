@@ -1,6 +1,6 @@
 # Module 9: Replication & Consistency Models
 
-Replication = keeping copies of your data on multiple machines. It's the foundation of high availability, fault tolerance, and read scalability. But copies mean they can diverge — and that's where consistency models come in.
+Replication is the practice of keeping copies of data on multiple machines. It is the foundation of high availability, fault tolerance, and read scalability. Because copies can diverge, consistency models define the guarantees a system provides about what those copies return.
 
 ---
 
@@ -461,11 +461,11 @@ Failover risks:
 
 ---
 
-**Next Up: Module 10 — NoSQL Design Patterns**
+**Next: Module 10 — NoSQL Design Patterns**
 
-We'll explore:
+The next module covers:
 - Document, Key-Value, Column-Family, Graph databases
 - Denormalization as a first-class design strategy
 - Data modeling for Cassandra, MongoDB, DynamoDB
 - When to use NoSQL vs SQL
-- The final prep before we build our own database
+- Final preparation before building a database from scratch

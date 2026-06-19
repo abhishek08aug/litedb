@@ -1,19 +1,19 @@
 # Deep Dive: Database Replication - Master-Slave Synchronization
 
-Excellent question! This touches on one of the most critical aspects of production databases: **replication** and **high availability**. Let me explain how databases keep replicas in sync.
+This document covers one of the most critical aspects of production databases: **replication** and **high availability**, and how databases keep replicas in sync.
 
-## Your Question
+## The Core Problem
 
-> "How is it ensured that master and slave (read replica) will always be in sync? Even if master crashes, slave would become master without customer impact."
+A common assumption is that a master and its slave (read replica) are always in sync, so that if the master crashes the slave can take over without customer impact.
 
-**Short Answer:** They are **NOT always perfectly in sync**! This is a fundamental trade-off in distributed systems.
+In practice, a master and its replicas are **not always perfectly in sync**. This is a fundamental trade-off in distributed systems.
 
-**Reality:** There are different replication modes with different guarantees:
+There are different replication modes, each with different guarantees:
 1. **Synchronous Replication** - Strong consistency, but slower
 2. **Asynchronous Replication** - Fast, but can lose data
 3. **Semi-Synchronous** - Middle ground
 
-Let's dive deep into each!
+The sections below examine each in detail.
 
 ---
 
@@ -94,7 +94,7 @@ Replica 1: balance = 400 ✓
 Replica 2: balance = 400 ✓
 ```
 
-**This delay is called "replication lag"** - typically milliseconds to seconds, but can be minutes under load!
+**This delay is called "replication lag"** - typically milliseconds to seconds, but it can reach minutes under load.
 
 ### What Happens If Master Crashes?
 
@@ -112,12 +112,12 @@ Failover to Replica 1:
 - Client's committed transaction is LOST! ❌
 ```
 
-**This is called "data loss during failover"** - a real problem with async replication!
+**This is called "data loss during failover"** - a real problem with async replication.
 
 ### Pros and Cons:
 
 **✅ Pros:**
-- Fast! Master doesn't wait for replicas
+- Fast: the master does not wait for replicas
 - High throughput
 - Works even if replicas are slow or down
 
@@ -162,7 +162,7 @@ T11: Replica 2 sends ACK to master ✓
 T12: Master returns SUCCESS to client ✓
 ```
 
-**Key Point:** Master waits at T5 until replicas acknowledge. Client doesn't get success until T12!
+**Key Point:** The master waits at T5 until replicas acknowledge. The client does not receive success until T12.
 
 ### The Guarantee: Zero Data Loss
 
@@ -180,7 +180,7 @@ All in sync!
 Failover to Replica 1:
 - Replica 1 becomes new master
 - Replica 1 has balance = 400 ✓
-- No data loss! ✓
+- No data loss ✓
 ```
 
 ### Pros and Cons:
@@ -191,9 +191,9 @@ Failover to Replica 1:
 - Replicas always have latest committed data
 
 **❌ Cons:**
-- Slow! Master waits for replicas
+- Slow: the master waits for replicas
 - Lower throughput
-- If replica is down, master blocks (availability issue!)
+- If a replica is down, the master blocks (an availability issue)
 
 ### PostgreSQL Configuration:
 
@@ -241,7 +241,7 @@ T9: Master returns SUCCESS to client ✓
 T10: Replica 2 receives WAL (later, asynchronously)
 ```
 
-**Key Point:** Master waits for just ONE replica to acknowledge, then returns success.
+**Key Point:** The master waits for just ONE replica to acknowledge, then returns success.
 
 ### The Guarantee: Minimal Data Loss
 
@@ -280,7 +280,7 @@ SET GLOBAL rpl_semi_sync_master_timeout = 1000; -- 1 second
 
 ## The Replication Process: Under the Hood
 
-Let's see how WAL is actually replicated:
+The following steps show how WAL is actually replicated:
 
 ### Step 1: Master Generates WAL
 
@@ -345,7 +345,7 @@ FROM pg_stat_replication;
 
 ## Failover: Promoting a Replica to Master
 
-When master crashes, we need to promote a replica:
+When the master crashes, a replica must be promoted:
 
 ### Automatic Failover Process:
 
@@ -497,7 +497,7 @@ FROM pg_stat_replication;
 
 ## The CAP Theorem Connection
 
-This relates to the **CAP theorem** (we'll cover in detail later):
+This relates to the **CAP theorem** (covered in detail in a later module):
 
 ```
 CAP Theorem: You can only have 2 out of 3:
@@ -518,9 +518,9 @@ CAP Theorem: You can only have 2 out of 3:
 
 ## Key Takeaways
 
-### ❌ Your Assumption: "Master and slave always in sync"
+### ❌ Common Assumption: "Master and slave always in sync"
 
-**Reality:** They are NOT always in sync!
+**Reality:** They are NOT always in sync.
 
 **Replication modes:**
 1. **Async (default)**: Fast, but replicas lag behind
@@ -561,17 +561,17 @@ Use semi-synchronous replication:
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
-**Question 1:** If master commits a transaction with async replication, is it guaranteed to be on replicas?
-**Answer:** NO! Replicas might lag behind. Data could be lost if master crashes before replicas receive it.
+**Question 1:** If the master commits a transaction with async replication, is it guaranteed to be on replicas?
+**Answer:** No. Replicas might lag behind. Data could be lost if the master crashes before replicas receive it.
 
 **Question 2:** Why is synchronous replication slower than asynchronous?
-**Answer:** Master must wait for replicas to acknowledge before returning success to client.
+**Answer:** The master must wait for replicas to acknowledge before returning success to the client.
 
 **Question 3:** What is "replication lag"?
-**Answer:** The delay between master committing data and replicas having that data. Measured in time (seconds) or bytes.
+**Answer:** The delay between the master committing data and replicas having that data. Measured in time (seconds) or bytes.
 
 ---
 
-This is a complex topic that we'll explore more in Module 10 (Replication and Consistency). Ready for more questions, or shall we continue with other Module 1 topics?
+This topic is explored further in Module 10 (Replication and Consistency).

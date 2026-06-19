@@ -1,15 +1,15 @@
-# Deep Dive: Buffer Pool, WAL, and Database Storage - Clarifying Your Understanding
+# Deep Dive: Buffer Pool, WAL, and Database Storage
 
-Great question! Let me clarify your understanding and correct a few important misconceptions.
+A database manages data across three storage components, each with a distinct role. The sections below trace how the three interact, with particular attention to the nuances of the buffer pool.
 
-## Your Understanding - Let's Review
+## Storage Components
 
-You mentioned three storage components:
+A database uses three storage components:
 1. **Actual DB files** (on disk)
 2. **WAL** (on disk)
 3. **Buffer pool** (in memory)
 
-Your understanding is **mostly correct**, but there are some **critical nuances** we need to clarify, especially about the buffer pool!
+The roles of the WAL and the DB files are relatively straightforward; the buffer pool carries the most important nuances and is the focus of the discussion that follows.
 
 ---
 
@@ -59,15 +59,15 @@ Your understanding is **mostly correct**, but there are some **critical nuances*
 
 ---
 
-## Correcting Your Understanding
+## A Key Point About the Buffer Pool
 
-### ❌ Misconception #1: "Uncommitted values will not be present in buffer pool"
+### The buffer pool holds uncommitted values
 
-**This is INCORRECT!** This is the most important correction.
+A common assumption is that uncommitted values are not present in the buffer pool. This is not the case, and it is the most important point to understand.
 
-**Reality:** The buffer pool contains **BOTH committed AND uncommitted data**!
+**Reality:** The buffer pool contains **BOTH committed AND uncommitted data**.
 
-**Why?** Because the buffer pool is where **all modifications happen first**, regardless of commit status.
+**Reason:** The buffer pool is where **all modifications happen first**, regardless of commit status.
 
 **Example:**
 ```sql
@@ -86,7 +86,7 @@ SELECT balance FROM accounts WHERE id = 1;
 - The buffer pool has the uncommitted value (400)
 - Other transactions may or may not see it (controlled by MVCC or locks)
 
-### ✅ Correct Understanding: Buffer Pool Contains Everything
+### Buffer Pool Contains Everything
 
 ```
 Buffer Pool (In Memory)
@@ -116,7 +116,7 @@ Buffer Pool (In Memory)
 
 ## How Transactions See Data: MVCC (Multi-Version Concurrency Control)
 
-This is how databases handle the fact that buffer pool has uncommitted data:
+MVCC is how databases handle the fact that the buffer pool holds uncommitted data.
 
 ### PostgreSQL Example (MVCC):
 
@@ -143,11 +143,11 @@ Transaction 101 reads Alice's balance:
   - If NO: See balance = 500 (old version)
 ```
 
-**This is why multiple versions exist in the buffer pool!**
+This is why multiple versions exist in the buffer pool.
 
 ---
 
-## Corrected Understanding: The Three Storage Components
+## The Three Storage Components in Detail
 
 ### 1. Write-Ahead Log (WAL) - Disk
 
@@ -158,7 +158,7 @@ Transaction 101 reads Alice's balance:
 - Transaction boundaries (BEGIN, COMMIT, ROLLBACK)
 - Enough information to REDO or UNDO operations
 
-**Your understanding:** ✅ **CORRECT**
+**Behavior:**
 - Written to disk before data changes
 - Used for recovery after crash
 - Uncommitted transactions are discarded on restart
@@ -188,9 +188,9 @@ LSN 1005: [XID 101] UPDATE accounts SET balance=500 WHERE id=3
 - **BOTH committed AND uncommitted data**
 - **Multiple versions** of rows (for MVCC)
 
-**Your understanding:** ❌ **INCORRECT** - You said "uncommitted values will not be present"
+**Note:** Contrary to a common assumption, uncommitted values **are** present in the buffer pool.
 
-**Corrected understanding:**
+**Contents in detail:**
 ```
 Buffer Pool contains:
 ✅ Committed data (visible to all transactions)
@@ -213,16 +213,16 @@ Buffer Pool contains:
 - Eventually consistent with WAL
 - May lag behind WAL (updated during checkpoints)
 
-**Your understanding:** ✅ **CORRECT**
-- Once data is here, it's durable
+**Behavior:**
+- Once data is here, it is durable
 - Updated asynchronously from buffer pool
 - May not have latest committed changes immediately after commit
 
 ---
 
-## Complete Transaction Flow with Corrected Understanding
+## Complete Transaction Flow
 
-Let's trace a transaction through all three storage layers:
+The following traces a transaction through all three storage layers:
 
 ```sql
 BEGIN;
@@ -344,24 +344,24 @@ Recovery:
 
 ---
 
-## Key Corrections Summary
+## Key Points Summary
 
-### ❌ Your Statement: "Uncommitted values will not be present in buffer pool"
+### Uncommitted values in the buffer pool
 
-**Correction:** Uncommitted values **ARE** present in buffer pool! The buffer pool is where ALL modifications happen first.
+Uncommitted values **are** present in the buffer pool; it is where ALL modifications happen first.
 
-**How other transactions don't see uncommitted data:**
+**How other transactions avoid seeing uncommitted data:**
 - **MVCC:** Multiple versions exist; each transaction sees the appropriate version
 - **Locking:** Locks prevent reading uncommitted data
 - **Transaction IDs:** Each row is tagged with the transaction that modified it
 
-### ✅ Your Statement: "WAL contains operations and commit information"
+### WAL contents
 
-**Correct!** WAL is the source of truth for recovery.
+The WAL contains operations and commit information, and it is the source of truth for recovery.
 
-### ✅ Your Statement: "DB files are durable once persisted"
+### DB file durability
 
-**Correct!** But remember: Commit is considered successful once WAL is on disk, even if DB files aren't updated yet.
+DB files are durable once persisted. Note, however, that a commit is considered successful once the WAL is on disk, even if the DB files are not updated yet.
 
 ---
 
@@ -394,17 +394,17 @@ Transaction Lifecycle:
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
-**Question 1:** If a transaction modifies a row but hasn't committed yet, is that modification in the buffer pool?
-**Answer:** YES! It's in the buffer pool, marked with the transaction ID and uncommitted status.
+**Question 1:** If a transaction modifies a row but has not committed yet, is that modification in the buffer pool?
+**Answer:** Yes. It is in the buffer pool, marked with the transaction ID and uncommitted status.
 
 **Question 2:** How can another transaction read the old value if the buffer pool has the new (uncommitted) value?
 **Answer:** MVCC keeps multiple versions, or locks prevent reading until commit.
 
-**Question 3:** Why is a transaction considered committed once WAL is flushed, even if DB files aren't updated?
-**Answer:** Because WAL can be replayed after a crash to reconstruct the committed state.
+**Question 3:** Why is a transaction considered committed once the WAL is flushed, even if DB files are not updated?
+**Answer:** Because the WAL can be replayed after a crash to reconstruct the committed state.
 
 ---
 
-Does this clarify your understanding? The key insight is that the buffer pool is a **working area** that contains everything (committed and uncommitted), and visibility is controlled separately through MVCC or locking mechanisms!
+The key insight is that the buffer pool is a **working area** that contains everything (committed and uncommitted), and visibility is controlled separately through MVCC or locking mechanisms.

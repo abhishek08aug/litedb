@@ -1,17 +1,14 @@
 # Deep Dive: Transaction Isolation Levels
 
-Excellent question! Isolation levels are one of the most important concepts in database transactions. Let me explain what they are, why they matter, and how different databases implement them.
+Isolation levels are among the most important concepts in database transactions. This document describes what they are, why they matter, and how different databases implement them.
 
-## Your Questions
+## Overview
 
-> "What is isolation level in database transaction? Why and how is it important? Does each database system support all the different isolation levels?"
+Three questions frame the topic: what an isolation level is, why it matters, and whether every database system supports all isolation levels.
 
-**Short Answers:**
-1. **What:** Isolation level defines how much one transaction can "see" changes made by other concurrent transactions
-2. **Why important:** Trade-off between data consistency and performance/concurrency
-3. **Support:** No! Different databases support different levels, and even when they claim to support the same level, the implementation can differ
-
-Let's dive deep!
+1. **What:** An isolation level defines how much one transaction can "see" of changes made by other concurrent transactions
+2. **Why important:** It represents a trade-off between data consistency and performance/concurrency
+3. **Support:** Different databases support different levels, and even when they claim to support the same level, the implementation can differ
 
 ---
 
@@ -166,7 +163,7 @@ SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 BEGIN;
 SELECT stock FROM products WHERE id = 123;
 -- Returns current committed stock level
--- Another transaction might change it before we commit
+-- Another transaction might change it before this one commits
 ```
 
 ---
@@ -386,7 +383,7 @@ SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 **Key Points:**
 - Only supports READ COMMITTED and SERIALIZABLE
 - Uses MVCC (multi-version concurrency control)
-- No dirty reads ever (even if you try)
+- No dirty reads ever (not available even when requested)
 
 ### SQL Server
 
@@ -493,7 +490,7 @@ Result: Only one customer gets the item ✓
 ### 3. Application Design Impact
 
 ```python
-# Application code must handle isolation level behavior
+# Application code must account for isolation level behavior
 
 # With READ COMMITTED:
 def transfer_money(from_account, to_account, amount):
@@ -501,10 +498,10 @@ def transfer_money(from_account, to_account, amount):
         # Might see inconsistent state mid-transaction
         balance = get_balance(from_account)
         if balance >= amount:
-            # Another transaction might change balance here!
+            # Another transaction might change balance here
             deduct(from_account, amount)
             add(to_account, amount)
-        # Need to handle race conditions
+        # Race conditions must be handled
 
 # With SERIALIZABLE:
 def transfer_money(from_account, to_account, amount):
@@ -514,7 +511,7 @@ def transfer_money(from_account, to_account, amount):
             # No other transaction can interfere
             deduct(from_account, amount)
             add(to_account, amount)
-        # Simpler logic, but might get serialization errors
+        # Simpler logic, but serialization errors may occur
 ```
 
 ---
@@ -587,25 +584,25 @@ Start: What are you doing?
 ### Pitfall 1: Assuming Default is SERIALIZABLE
 
 ```sql
--- Many developers assume this:
+-- A common but mistaken assumption:
 BEGIN;
 SELECT balance FROM accounts WHERE id = 1;
--- Assume balance won't change...
+-- Assumes balance will not change...
 UPDATE accounts SET balance = balance - 100 WHERE id = 1;
 COMMIT;
 
--- Reality: With READ COMMITTED (default), balance CAN change!
+-- Reality: With READ COMMITTED (default), balance CAN change
 ```
 
-**Solution:** Explicitly set isolation level or use SELECT FOR UPDATE
+**Solution:** Explicitly set the isolation level or use SELECT FOR UPDATE
 
 ### Pitfall 2: Not Handling Serialization Errors
 
 ```python
-# With SERIALIZABLE, you MUST handle errors:
+# With SERIALIZABLE, serialization errors must be handled:
 try:
     with transaction(isolation='SERIALIZABLE'):
-        # Your transaction logic
+        # transaction logic
         pass
 except SerializationError:
     # Retry the transaction
@@ -615,16 +612,16 @@ except SerializationError:
 ### Pitfall 3: Using Wrong Level for Use Case
 
 ```sql
--- DON'T do this for inventory:
+-- Avoid this for inventory:
 SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 BEGIN;
 SELECT stock FROM products WHERE id = 123;
--- Stock might change here!
+-- Stock might change here
 UPDATE products SET stock = stock - 1 WHERE id = 123;
 COMMIT;
--- Might oversell!
+-- Risk of overselling
 
--- DO this instead:
+-- Prefer this instead:
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 -- or use SELECT FOR UPDATE
 ```
@@ -642,13 +639,13 @@ SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 - **Data Integrity**: Prevents anomalies (dirty reads, etc.)
 - **Performance**: Higher isolation = lower performance
 - **Concurrency**: Higher isolation = lower concurrency
-- **Application Logic**: Affects how you write code
+- **Application Logic**: Affects how application code must be written
 
 ### Database Support:
 - ❌ **Not all databases support all levels**
 - ❌ **Same level can behave differently** across databases
 - ✅ **Most support READ COMMITTED and SERIALIZABLE**
-- ⚠️ **Check your database's documentation**
+- ⚠️ **Consult the specific database's documentation**
 
 ### Best Practices:
 1. **Use READ COMMITTED as default** (good balance)
@@ -659,17 +656,17 @@ SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
 ---
 
-## Test Your Understanding
+## Review Questions
 
-**Question 1:** What's the difference between READ COMMITTED and REPEATABLE READ?
+**Question 1:** What is the difference between READ COMMITTED and REPEATABLE READ?
 **Answer:** READ COMMITTED allows the same query to return different results within a transaction. REPEATABLE READ ensures the same query returns the same results.
 
-**Question 2:** Can PostgreSQL have dirty reads?
-**Answer:** NO! Even READ UNCOMMITTED behaves like READ COMMITTED in PostgreSQL.
+**Question 2:** Can PostgreSQL exhibit dirty reads?
+**Answer:** No. Even READ UNCOMMITTED behaves like READ COMMITTED in PostgreSQL.
 
-**Question 3:** When should you use SERIALIZABLE?
-**Answer:** When you need absolute consistency and can tolerate lower performance (e.g., financial transactions, inventory management).
+**Question 3:** When is SERIALIZABLE the appropriate level?
+**Answer:** When absolute consistency is required and lower performance is acceptable (e.g., financial transactions, inventory management).
 
 ---
 
-This is a critical concept for building reliable applications! We'll explore this more in Module 6 (Concurrency Control) along with MVCC implementation details. Ready for more questions?
+Isolation levels are a critical concept for building reliable applications. Module 6 (Concurrency Control) covers the topic further, along with MVCC implementation details.

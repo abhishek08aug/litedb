@@ -18,7 +18,7 @@ Sharding: Splitting data across multiple database instances
   → Examples: Cassandra, MongoDB sharding, Vitess for MySQL
 ```
 
-In practice, "sharding" and "horizontal partitioning" are used interchangeably. We'll use "sharding" for cross-machine splits.
+In practice, "sharding" and "horizontal partitioning" are used interchangeably. This document uses "sharding" for cross-machine splits.
 
 ---
 
@@ -329,7 +329,7 @@ Cross-shard transactions (hardest):
 
 ## Resharding: The Hardest Problem
 
-What happens when you need to add more shards?
+Resharding is the process of adding more shards to an existing system.
 
 ```
 Current: 4 shards, each with 1TB data
@@ -424,16 +424,16 @@ Resharding:
   Consistent hashing minimizes data movement
   Online resharding requires dual-write + backfill
 
-Choose sharding only when you need it:
+Adopt sharding only when it is needed:
   Single node → replicas → read replicas → then shard
   Premature sharding adds enormous complexity
 ```
 
 ---
 
-**Next Up: Module 9 — Replication & Consistency Models**
+**Next: Module 9 — Replication & Consistency Models**
 
-We'll explore:
+The next module covers:
 - Single-leader, multi-leader, and leaderless replication
 - Synchronous vs asynchronous replication
 - Replication lag and its consequences

@@ -1,13 +1,13 @@
 # Module 5: Query Processing & Optimization
 
-Understanding how a database turns your SQL string into actual results is essential for writing fast queries and diagnosing performance problems.
+Understanding how a database turns a SQL string into actual results is essential for writing fast queries and diagnosing performance problems.
 
 ---
 
 ## The Journey of a SQL Query
 
 ```
-Your SQL string
+SQL string
       ↓
 1. PARSER         → Syntax check, build parse tree
       ↓
@@ -20,7 +20,7 @@ Your SQL string
       ↓
 5. EXECUTOR       → Execute the chosen plan, return results
       ↓
-Your results
+Results
 ```
 
 ---
@@ -149,9 +149,9 @@ Cost: O(N × M)  where N = rows in A, M = rows in B
 ✓ LIMIT queries (can stop early)
 
 Example: users (1000 rows) JOIN orders (1M rows) with index on user_id
-  → 1000 index lookups into orders = fast!
+  → 1000 index lookups into orders = fast
 
-Bad for: Large tables without indexes (1M × 1M = 1 trillion comparisons!)
+Bad for: Large tables without indexes (1M × 1M = 1 trillion comparisons)
 ```
 
 ### 2. Hash Join
@@ -189,7 +189,7 @@ If hash table > work_mem:
   → Process partition by partition
   → Much slower (disk I/O)
 
-PostgreSQL default work_mem = 4MB (often too small!)
+PostgreSQL default work_mem = 4MB (often too small)
 SET work_mem = '256MB';  -- for complex analytical queries
 ```
 
@@ -295,7 +295,7 @@ rows=N:
 actual rows=N:
   real rows (only in EXPLAIN ANALYZE)
 
-If estimated rows ≠ actual rows by a lot → stale statistics!
+If estimated rows ≠ actual rows by a lot → stale statistics.
 Run ANALYZE to update them.
 ```
 
@@ -309,7 +309,7 @@ Hash Join       → Hash join algorithm
 Nested Loop     → Nested loop join
 Merge Join      → Sort-merge join
 HashAggregate   → GROUP BY using hash table
-Sort            → ORDER BY (check if it spills to disk!)
+Sort            → ORDER BY (check whether it spills to disk)
 ```
 
 ---
@@ -333,7 +333,7 @@ LIMIT 10;
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
-SELECT ...your slow query...;
+SELECT ...the slow query...;
 ```
 
 ### Step 3: Look for these red flags
@@ -405,7 +405,7 @@ CREATE INDEX ON users(status, name, email);
    → Let the optimizer do this, but hint if needed
 
 3. Avoid SELECT *
-   → Fetch only columns you need
+   → Fetch only the required columns
    → Enables covering index usage
 
 4. Avoid functions on indexed columns in WHERE
@@ -414,10 +414,10 @@ CREATE INDEX ON users(status, name, email);
 
 5. Use LIMIT with ORDER BY + index
    → SELECT * FROM orders ORDER BY created_at DESC LIMIT 10
-   → With index on created_at: reads only 10 rows!
+   → With index on created_at: reads only 10 rows
 
 6. Pagination: use keyset pagination, not OFFSET
-   → OFFSET 100000 still reads 100,000 rows and discards them!
+   → OFFSET 100000 still reads 100,000 rows and discards them
    → WHERE id > last_seen_id LIMIT 10  ← reads only 10 rows
 ```
 

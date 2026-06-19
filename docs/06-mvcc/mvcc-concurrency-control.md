@@ -1,6 +1,6 @@
 # Module 6: Concurrency Control & MVCC Deep Dive
 
-How does a database serve thousands of concurrent readers and writers without them stepping on each other? This module reveals the engine behind isolation levels — **Multi-Version Concurrency Control (MVCC)**.
+A database serves thousands of concurrent readers and writers without them stepping on each other through the engine behind isolation levels — **Multi-Version Concurrency Control (MVCC)**. This module covers how it works.
 
 ---
 
@@ -76,7 +76,7 @@ Row stored as:
 Old row: xmin=100, xmax=200, id=1, balance=1000  ← marked deleted by T200
 New row: xmin=200, xmax=0,   id=1, balance=800   ← new version by T200
 
-Both rows exist on disk simultaneously!
+Both rows exist on disk simultaneously.
 ```
 
 **Example — DELETE:**
@@ -136,7 +136,7 @@ T300 evaluates Row B:
   → Row B is INVISIBLE to T300
 
 Result: T300 sees balance=1000 (the old value, before T200's update)
-This is the "consistent snapshot" guarantee!
+This is the "consistent snapshot" guarantee.
 ```
 
 ---
@@ -190,7 +190,7 @@ MVCC snapshot isolation allows this because:
   - But the combined effect violates the invariant
 ```
 
-**Solution:** Use `SELECT FOR UPDATE` to lock the rows you read:
+**Solution:** Use `SELECT FOR UPDATE` to lock the rows that were read:
 ```sql
 BEGIN;
 SELECT COUNT(*) FROM doctors WHERE on_call = true FOR UPDATE;
@@ -263,17 +263,17 @@ VACUUM process:
 
 VACUUM FULL:
   Rewrites entire table, reclaims disk space
-  Locks table during operation (use carefully!)
+  Locks table during operation (use carefully)
 
 autovacuum:
   Background daemon that runs VACUUM automatically
   Triggered when: dead tuples > threshold (default 20% of table)
 ```
 
-**Transaction ID Wraparound (Critical!):**
+**Transaction ID Wraparound:**
 ```
 PostgreSQL uses 32-bit transaction IDs (max ~4 billion)
-If txid wraps around → old rows become "future" rows → data loss!
+If txid wraps around → old rows become "future" rows → data loss
 
 Prevention: VACUUM must run regularly to freeze old txids
   VACUUM FREEZE marks old rows as permanently visible
@@ -281,7 +281,7 @@ Prevention: VACUUM must run regularly to freeze old txids
 
 Monitor with:
   SELECT age(datfrozenxid) FROM pg_database;
-  -- If > 1.5 billion → urgent! Run VACUUM FREEZE
+  -- If > 1.5 billion → urgent; run VACUUM FREEZE
 ```
 
 ---
@@ -387,9 +387,9 @@ Storage overhead:
 
 ---
 
-**Next Up: Module 7 — Distributed Databases & CAP Theorem**
+**Next: Module 7 — Distributed Databases & CAP Theorem**
 
-We'll explore:
+Topics covered:
 - Why single-node databases hit limits
 - CAP Theorem: Consistency, Availability, Partition Tolerance
 - PACELC: the more nuanced model
