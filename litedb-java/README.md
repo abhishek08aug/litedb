@@ -50,6 +50,28 @@ javac --release 11 -d target/classes \
 java -cp target/classes com.litedb.demo.RunDemo
 ```
 
+### Run as a database (server + client)
+
+LiteDB separates three roles: the **server** (`com.litedb.server.LiteDBServer`) brings up the database, the **client** (`com.litedb.client.LiteDBClient`) connects to it, and the **integration demo** (`com.litedb.demo.RunDemo`) is a single-process tour of every module.
+
+```bash
+# Terminal 1 — start the server (persistent; data in ./litedb-data, Ctrl-C to stop)
+java -cp target/classes com.litedb.server.LiteDBServer
+#   options: --port 7379  --data-dir ./litedb-data
+
+# Terminal 2 — connect with the interactive client
+java -cp target/classes com.litedb.client.LiteDBClient
+#   options: --host 127.0.0.1  --port 7379
+
+# Or run the client's scripted smoke test:
+java -cp target/classes com.litedb.client.LiteDBClient --demo
+
+# Or use any TCP client:
+nc localhost 7379
+```
+
+Commands: `PING`, `SET k v`, `GET k`, `DELETE k`, `SCAN start end`, `STATS`, `HELP`, `QUIT`. Data persists across restarts — on startup the engine replays the WAL and loads existing SSTables.
+
 ### With Maven (if your settings.xml points to a reachable repo)
 
 ```bash

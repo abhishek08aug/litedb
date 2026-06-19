@@ -6,7 +6,6 @@ import com.litedb.query.QueryResult;
 
 import java.io.*;
 import java.net.*;
-import java.nio.file.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -30,6 +29,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *     Server replies: "VALUE Alice\n"
  *
  *   This is exactly how Redis, Memcached, and early MongoDB work.
+ *
+ *   To connect, use {@link com.litedb.client.LiteDBClient} (or any TCP client
+ *   such as {@code nc localhost 7379}).
  */
 public class LiteDBServer {
 
@@ -123,92 +125,42 @@ public class LiteDBServer {
     }
 
     // ======================================================================= //
-    //  DEMO — starts server, runs a self-test client, then shuts down         //
+    //  Entry point — brings up a persistent server and blocks until stopped   //
     // ======================================================================= //
-
+    //
+    //  Usage:
+    //    java -cp target/classes com.litedb.server.LiteDBServer [--port N] [--data-dir DIR]
+    //
+    //  Defaults: --port 7379, --data-dir ./litedb-data
+    //  Data persists across restarts (the LSM engine replays the WAL and loads
+    //  existing SSTables on startup). Stop with Ctrl-C.
+    //
     public static void main(String[] args) throws Exception {
-        Path tmpDir = Files.createTempDirectory("litedb_server_demo_");
-        LSMEngine engine = new LSMEngine(tmpDir.toString());
+        int    port    = 7379;
+        String dataDir = "./litedb-data";
 
-        int port = 7379;
-        LiteDBServer server = new LiteDBServer(port, engine);
-
-        // Start server in background thread
-        Thread serverThread = new Thread(() -> {
-            try { server.start(); } catch (IOException e) {
-                if (server.running) System.out.println("[Server] Error: " + e.getMessage());
-            }
-        }, "litedb-server");
-        serverThread.setDaemon(true);
-        serverThread.start();
-
-        // Give server time to bind
-        Thread.sleep(200);
-
-        System.out.println("============================================================");
-        System.out.println("LITEDB SERVER DEMO — self-test client");
-        System.out.println("============================================================\n");
-
-        // Run a client
-        try (Socket socket = new Socket("127.0.0.1", port);
-             BufferedReader reader = new BufferedReader(
-                     new InputStreamReader(socket.getInputStream(), "UTF-8"));
-             PrintWriter writer = new PrintWriter(
-                     new OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true)) {
-
-            // Read banner
-            System.out.println("  Banner: " + reader.readLine());
-
-            String[][] commands = {
-                {"PING",                  null},
-                {"SET name Alice",        null},
-                {"SET age 30",            null},
-                {"GET name",              null},
-                {"GET missing",           null},
-                {"SCAN a z",              null},
-                {"DELETE age",            null},
-                {"GET age",               null},
-                {"STATS",                 null},
-                {"QUIT",                  null},
-            };
-
-            for (String[] cmd : commands) {
-                writer.print(cmd[0] + "\n");
-                writer.flush();
-
-                // Read response (may be multi-line for SCAN)
-                StringBuilder response = new StringBuilder();
-                String line;
-                if (cmd[0].startsWith("SCAN")) {
-                    // Read until SCAN_END
-                    while ((line = reader.readLine()) != null) {
-                        response.append(line);
-                        if (line.startsWith("SCAN_END")) break;
-                        response.append(" | ");
-                    }
-                } else {
-                    line = reader.readLine();
-                    if (line != null) response.append(line);
-                }
-                System.out.printf("  > %-25s → %s%n", cmd[0], response);
+        for (int i = 0; i < args.length - 1; i++) {
+            switch (args[i]) {
+                case "--port":     port    = Integer.parseInt(args[i + 1]); break;
+                case "--data-dir": dataDir = args[i + 1];                    break;
+                default: /* ignore */                                        break;
             }
         }
 
-        Thread.sleep(100);
-        server.stop();
-        engine.close();
-        deleteDir(tmpDir.toFile());
+        LSMEngine    engine = new LSMEngine(dataDir);
+        LiteDBServer server = new LiteDBServer(port, engine);
 
-        System.out.println("\n[Done] Server demo complete.");
-        System.out.println("\nKey insights:");
-        System.out.println("  1. Each client gets its own thread (thread-per-connection model)");
-        System.out.println("  2. The engine is shared — thread safety is in LSMEngine/MemTable");
-        System.out.println("  3. Text protocol is easy to test with: nc localhost 7379");
-        System.out.println("  4. Production databases use async I/O (Netty, io_uring) for scale");
-    }
+        // Graceful shutdown on Ctrl-C: stop accepting, flush, close the engine.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try { server.stop(); engine.close(); } catch (Exception ignored) {}
+        }, "litedb-shutdown"));
 
-    private static void deleteDir(File dir) {
-        if (dir.isDirectory()) { for (File f : dir.listFiles()) deleteDir(f); }
-        dir.delete();
+        System.out.println("[LiteDB] data dir: " + dataDir);
+        System.out.println("[LiteDB] connect with:  java -cp target/classes com.litedb.client.LiteDBClient"
+                + (port == 7379 ? "" : " --port " + port));
+        System.out.println("[LiteDB]          or:  nc localhost " + port);
+        System.out.println("[LiteDB] press Ctrl-C to stop.");
+
+        server.start();   // blocks in the accept loop until stop()
     }
 }
