@@ -94,6 +94,7 @@ No external dependencies — pure Python stdlib only.
 | File | Purpose |
 |------|---------|
 | `_loader.py` | Import helper — adds module dir to `sys.path` |
+| `client.py` | TCP client for `server.py` — interactive REPL or `--demo` smoke test |
 | `run_demo.py` | Comprehensive demo runner — all 14 modules (foundational + advanced) |
 
 ---
@@ -116,22 +117,31 @@ python transactions.py
 python btree.py
 ```
 
-### Run the TCP Server
+### Run as a database (server + client)
+
+The **server** (`server.py`) brings up the database; the **client** (`client.py`) connects to it. Data persists across restarts — on startup the engine replays the WAL and loads existing SSTables.
 
 ```bash
-# Primary node on port 7379:
+# Terminal 1 — start the server (persistent; Ctrl-C to stop)
 python server.py --port 7379 --data-dir ./data/primary
 
-# Replica node on port 7380 (replicates from primary):
+#   a replica node (replicates from primary):
 python server.py --port 7380 --data-dir ./data/replica --replica-of localhost:7379
 
-# Connect with netcat:
+# Terminal 2 — connect with the interactive client
+python client.py --host 127.0.0.1 --port 7379
+#   litedb> SET name Alice
+#   litedb> GET name
+#   litedb> SCAN a z
+
+# Or run the client's scripted smoke test:
+python client.py --demo
+
+# Or use any TCP client:
 nc localhost 7379
-SET name Alice
-GET name
-SCAN a z
-DELETE name
 ```
+
+Commands: `PING`, `SET k v`, `GET k`, `DELETE k`, `SCAN start end`, `STATS`, `HELP`, `QUIT`.
 
 ---
 

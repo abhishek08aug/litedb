@@ -15,9 +15,8 @@ CONCEPT:
     python server.py --port 7379 --data-dir ./data/primary
 
   Connect:
-    nc localhost 7379
-    SET name Alice
-    GET name
+    python client.py --port 7379   # interactive client (or --demo)
+    nc localhost 7379              # or any TCP client
 """
 
 import sys
