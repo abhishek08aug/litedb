@@ -1,8 +1,8 @@
 # LiteDB
 
-> **Build a database from scratch — in Python and Java.**
+> **A database engine built from first principles — in Python and Java.**
 
-LiteDB is a fully working key-value and SQL database built step-by-step to teach the core algorithms behind PostgreSQL, Cassandra, etcd, and RocksDB. Every layer — storage, transactions, query processing, replication, consensus, and observability — is implemented from first principles with no external dependencies.
+LiteDB is a fully working key-value and SQL database implementing the core algorithms behind PostgreSQL, Cassandra, etcd, and RocksDB — storage, transactions, query processing, replication, consensus, and observability — with zero external dependencies. Each subsystem is documented end-to-end (concept → implementation).
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Java](https://img.shields.io/badge/java-11%2B-blue)
@@ -12,7 +12,7 @@ LiteDB is a fully working key-value and SQL database built step-by-step to teach
 
 ---
 
-## What you will build
+## What's implemented
 
 | Layer | What | Real-world analogue |
 |-------|------|---------------------|
@@ -30,7 +30,7 @@ LiteDB is a fully working key-value and SQL database built step-by-step to teach
 ### Python
 
 ```bash
-git clone https://github.com/<your-username>/litedb.git
+git clone https://github.com/abhishek08aug/litedb.git
 cd litedb/litedb-python
 
 # All 14 modules — WAL → MemTable → SSTable → LSM-Tree → Parser → Replication
