@@ -230,6 +230,8 @@ The [`docs/`](./docs/) directory contains 10 modules and 18 deep-dive articles c
 - **[Module 08 — Sharding](./docs/08-sharding/)** — range/hash partitioning, consistent hashing, virtual nodes
 - **[Module 09 — Replication](./docs/09-replication/)** — sync/async replication, consistency models, Raft
 - **[Module 10 — NoSQL Patterns](./docs/10-nosql/)** — denormalization, embedding, time-series, wide rows
+- **[Module 11 — Security: Auth, RBAC & Pooling](./docs/11-security/)** — PBKDF2 auth, RBAC, connection pooling, rate limiting
+- **[Module 12 — Metrics & Observability](./docs/12-observability/)** — counters/gauges/histograms, percentiles, slow query log, tracing
 
 → **[Full docs index](./docs/README.md)**
 
@@ -251,8 +253,8 @@ The [`docs/`](./docs/) directory contains 10 modules and 18 deep-dive articles c
 | SQL Parser & Executor | [Module 05](./docs/05-query-processing/query-processing-optimization.md) | `litedb-python/sql_parser.py` | `com.litedb.sql.SQLParser` |
 | Consistent Hashing | [Module 08](./docs/08-sharding/sharding-partitioning.md) | `litedb-python/sharding.py` | `com.litedb.sharding.ConsistentHashRing` |
 | Raft Consensus | [Module 09](./docs/09-replication/replication-consistency-models.md) | `litedb-python/raft.py` | `com.litedb.raft.RaftNode` |
-| Auth + RBAC + Pool | — | `litedb-python/auth_pool.py` | `com.litedb.auth.AuthManager` |
-| Metrics + Tracing | — | `litedb-python/metrics.py` | `com.litedb.metrics.MetricsRegistry` |
+| Auth + RBAC + Pool | [Module 11](./docs/11-security/auth-rbac-and-pooling.md) | `litedb-python/auth_pool.py` | `com.litedb.auth.AuthManager` |
+| Metrics + Tracing | [Module 12](./docs/12-observability/metrics-and-observability.md) | `litedb-python/metrics.py` | `com.litedb.metrics.MetricsRegistry` |
 
 ---
 

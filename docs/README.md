@@ -131,6 +131,32 @@ Patterns for designing schemas and access patterns in document, key-value, and c
 
 ---
 
+### [Module 11 — Security: Auth, RBAC & Pooling](./11-security/)
+
+Controlling who connects, what they may do, and how connection resources and abuse are managed.
+
+| Article | Topic |
+|---------|-------|
+| [Auth, RBAC, Pooling & Rate Limiting](./11-security/auth-rbac-and-pooling.md) | PBKDF2 authentication, RBAC roles/permissions, bounded connection pool, token-bucket rate limiting |
+
+**Implemented in:** `litedb-python/auth_pool.py`  
+**Java:** `com.litedb.auth.AuthManager`
+
+---
+
+### [Module 12 — Metrics & Observability](./12-observability/)
+
+How to measure and explain what the database is doing.
+
+| Article | Topic |
+|---------|-------|
+| [Metrics, Slow Query Log & Tracing](./12-observability/metrics-and-observability.md) | Counters/gauges/histograms, percentiles, slow query log, distributed tracing |
+
+**Implemented in:** `litedb-python/metrics.py`  
+**Java:** `com.litedb.metrics.MetricsRegistry`
+
+---
+
 ## Concept → Implementation Map
 
 | Concept | Doc | Python (`litedb-python/`) | Java (`com.litedb.*`) |
@@ -147,5 +173,5 @@ Patterns for designing schemas and access patterns in document, key-value, and c
 | SQL Parser & Executor | [Module 05](./05-query-processing/query-processing-optimization.md) | `sql_parser.py` | `sql.SQLParser` |
 | Consistent Hashing | [Module 08](./08-sharding/sharding-partitioning.md) | `sharding.py` | `sharding.ConsistentHashRing` |
 | Raft Consensus | [Module 09](./09-replication/replication-consistency-models.md) | `raft.py` | `raft.RaftNode` |
-| Auth + RBAC + Pool | — | `auth_pool.py` | `auth.AuthManager` |
-| Metrics + Tracing | — | `metrics.py` | `metrics.MetricsRegistry` |
+| Auth + RBAC + Pool | [Module 11](./11-security/auth-rbac-and-pooling.md) | `auth_pool.py` | `auth.AuthManager` |
+| Metrics + Tracing | [Module 12](./12-observability/metrics-and-observability.md) | `metrics.py` | `metrics.MetricsRegistry` |
