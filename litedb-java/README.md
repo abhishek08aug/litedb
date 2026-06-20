@@ -29,7 +29,7 @@ All 13 modules are **fully implemented and tested**.
 | TCP Client | `com.litedb.client` | `LiteDBClient` | ✅ complete |
 | Pluggable Storage Engine | `com.litedb.engine` | `StorageEngine`, `BTreeEngine` | ✅ complete |
 | Secondary Index | `com.litedb.index` | `SecondaryIndex` | ✅ complete |
-| Relational layer (SQL) | `com.litedb.relational` | `Catalog`, `TableSchema`, `RowCodec`, `RelationalEngine` | 🟡 Phase 2 — DDL + `INSERT`/`SELECT`/`DELETE` (WHERE, projection, ORDER BY, LIMIT) |
+| Relational layer (SQL) | `com.litedb.relational` | `Catalog`, `TableSchema`, `IndexDef`, `RelationalEngine` | 🟡 Phase 3 — DDL + DML + `CREATE INDEX` (multiple indexes) + query planner (index-scan vs full-scan) |
 | Async Replication | `com.litedb.replication` | `ReplicationLog` | ✅ complete |
 | Consistent Hashing | `com.litedb.sharding` | `ConsistentHashRing` | ✅ complete |
 | Raft Consensus | `com.litedb.raft` | `RaftNode` | ✅ complete |

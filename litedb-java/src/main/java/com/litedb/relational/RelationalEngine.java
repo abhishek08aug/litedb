@@ -20,24 +20,33 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * RelationalEngine — a thin SQL/relational layer over a {@link StorageEngine}.
+ * RelationalEngine — a SQL/relational layer over a {@link StorageEngine}.
  *
- * Maps tables and rows onto the ordered key-value store via key prefixes (the standard
- * "SQL on KV" technique):
- *   __catalog__/&lt;table&gt;  -&gt; serialized schema
- *   &lt;table&gt;/&lt;pk&gt;         -&gt; encoded row
- * The primary key is the table's first column.
+ * Key namespaces on the ordered KV store ("SQL on KV"):
+ *   __catalog__/table/&lt;t&gt;                       -&gt; schema
+ *   __catalog__/index/&lt;name&gt;                    -&gt; index definition
+ *   &lt;table&gt;/&lt;pk&gt;                                -&gt; row (RowCodec)
+ *   __idx__/&lt;table&gt;/&lt;column&gt;/&lt;value&gt;\0&lt;pk&gt;       -&gt; pk   (secondary index entry)
  *
- * Phase 1: schema catalog + DDL (CREATE/DROP TABLE).
- * Phase 2: DML — INSERT, SELECT (projection, WHERE, ORDER BY, LIMIT), DELETE, executed by
- *          scanning the table's key range. WHERE comparisons are lexicographic for now;
- *          typed/order-preserving comparison is a later phase. Secondary indexes and a query
- *          planner (index-scan vs full-scan) and transactional atomicity are later phases too.
+ * Phase 1: catalog + DDL.  Phase 2: INSERT/SELECT/DELETE via full scan.
+ * Phase 3 (this): CREATE/DROP INDEX, multiple secondary indexes maintained on every write,
+ * and a query planner that uses an index range-scan instead of a full scan when the WHERE
+ * column is indexed with a range/equality operator.
+ *
+ * Comparisons are still lexicographic (typed, order-preserving encoding is Phase 4) and
+ * multi-key writes are not yet atomic (Phase 5).
  */
 public final class RelationalEngine {
+
+    private static final String SEP = String.valueOf((char) 0);   // value\0pk separator in index keys
+    private static final Pattern CREATE_INDEX =
+            Pattern.compile("(?i)\\s*CREATE\\s+INDEX\\s+(\\w+)\\s+ON\\s+(\\w+)\\s*\\(\\s*(\\w+)\\s*\\)\\s*;?\\s*");
+    private static final Pattern DROP_INDEX =
+            Pattern.compile("(?i)\\s*DROP\\s+INDEX\\s+(\\w+)\\s*;?\\s*");
 
     private final StorageEngine engine;
     private final Catalog catalog;
@@ -48,16 +57,22 @@ public final class RelationalEngine {
         this.catalog = new Catalog(engine);
     }
 
-    public Catalog catalog() {
-        return catalog;
+    public Catalog catalog() { return catalog; }
+
+    static String rowKey(String table, String pk)            { return table + "/" + pk; }
+    static String indexPrefix(String table, String column)   { return "__idx__/" + table + "/" + column + "/"; }
+    static String indexKey(String table, String col, String value, String pk) {
+        return indexPrefix(table, col) + value + SEP + pk;
     }
 
-    static String rowKey(String table, String primaryKeyValue) {
-        return table + "/" + primaryKeyValue;
-    }
-
-    /** Execute one SQL statement; returns a human-readable result. */
+    /** Execute one statement; returns a human-readable result. */
     public String execute(String sql) throws IOException {
+        // CREATE INDEX / DROP INDEX aren't in SQLParser yet — handle them here.
+        Matcher ci = CREATE_INDEX.matcher(sql);
+        if (ci.matches()) return createIndex(ci.group(1), ci.group(2), ci.group(3));
+        Matcher di = DROP_INDEX.matcher(sql);
+        if (di.matches()) return dropIndex(di.group(1));
+
         Statement stmt;
         try {
             stmt = parser.parse(sql);
@@ -70,8 +85,7 @@ public final class RelationalEngine {
             case "INSERT":       return insert((InsertStatement) stmt);
             case "SELECT":       return select((SelectStatement) stmt);
             case "DELETE":       return delete((DeleteStatement) stmt);
-            default:
-                return "ERROR: " + stmt.type() + " not supported yet";
+            default:             return "ERROR: " + stmt.type() + " not supported yet";
         }
     }
 
@@ -88,6 +102,11 @@ public final class RelationalEngine {
 
     private String dropTable(DropTableStatement s) throws IOException {
         if (!catalog.hasTable(s.table)) return "ERROR: no such table: " + s.table;
+        // drop the table's indexes (entries + defs)
+        for (IndexDef idx : catalog.indexesForTable(s.table)) {
+            deletePrefix(indexPrefix(s.table, idx.column));
+            catalog.dropIndex(idx.name);
+        }
         int deleted = 0;
         for (Map.Entry<String, String> e : new ArrayList<>(scanTable(s.table))) {
             engine.delete(e.getKey());
@@ -97,20 +116,47 @@ public final class RelationalEngine {
         return "OK: dropped table " + s.table + " (" + deleted + " rows removed)";
     }
 
+    private String createIndex(String name, String table, String column) throws IOException {
+        TableSchema schema = catalog.getTable(table);
+        if (schema == null)                          return "ERROR: no such table: " + table;
+        if (schema.columnIndex(column) < 0)          return "ERROR: no such column: " + column;
+        if (catalog.hasIndex(name))                  return "ERROR: index already exists: " + name;
+        if (catalog.indexForColumn(table, column) != null)
+            return "ERROR: column already indexed: " + table + "(" + column + ")";
+
+        catalog.createIndex(new IndexDef(name, table, column));
+        // build it from existing rows
+        int ci = schema.columnIndex(column);
+        int built = 0;
+        for (Map.Entry<String, String> e : scanTable(table)) {
+            List<String> row = RowCodec.decode(e.getValue());
+            engine.set(indexKey(table, column, row.get(ci), row.get(0)), row.get(0));
+            built++;
+        }
+        return "OK: created index " + name + " ON " + table + "(" + column + ") — " + built + " entries";
+    }
+
+    private String dropIndex(String name) throws IOException {
+        IndexDef def = catalog.getIndex(name);
+        if (def == null) return "ERROR: no such index: " + name;
+        deletePrefix(indexPrefix(def.table, def.column));
+        catalog.dropIndex(name);
+        return "OK: dropped index " + name;
+    }
+
     // ---- DML --------------------------------------------------------------
 
     private String insert(InsertStatement s) throws IOException {
         TableSchema schema = catalog.getTable(s.table);
         if (schema == null) return "ERROR: no such table: " + s.table;
-
         List<String> row = buildRow(schema, s.columns, s.values);
         if (row == null) return "ERROR: column/value mismatch for INSERT into " + s.table;
 
-        String pk = row.get(0);                       // PK = first column
-        String key = rowKey(s.table, pk);
-        if (engine.get(key) != null) return "ERROR: duplicate primary key: " + pk;
+        String pk = row.get(0);
+        if (engine.get(rowKey(s.table, pk)) != null) return "ERROR: duplicate primary key: " + pk;
 
-        engine.set(key, RowCodec.encode(row));
+        engine.set(rowKey(s.table, pk), RowCodec.encode(row));
+        addIndexEntries(schema, pk, row);
         return "OK: 1 row inserted";
     }
 
@@ -118,21 +164,26 @@ public final class RelationalEngine {
         TableSchema schema = catalog.getTable(s.table);
         if (schema == null) return "ERROR: no such table: " + s.table;
 
-        // resolve projected columns
         List<String> proj = (s.columns.size() == 1 && s.columns.get(0).equals("*"))
                 ? schema.columnNames() : s.columns;
-        for (String c : proj) {
-            if (schema.columnIndex(c) < 0) return "ERROR: no such column: " + c;
-        }
+        for (String c : proj) if (schema.columnIndex(c) < 0) return "ERROR: no such column: " + c;
 
-        // scan + filter (full rows in schema order)
+        // ---- query planner: index-scan vs full-scan ----
         List<List<String>> rows = new ArrayList<>();
-        for (Map.Entry<String, String> e : scanTable(s.table)) {
-            List<String> row = RowCodec.decode(e.getValue());
-            if (s.where == null || evalWhere(s.where, schema, row)) rows.add(row);
+        String plan;
+        IndexDef idx = (s.where != null) ? catalog.indexForColumn(s.table, s.where.column) : null;
+        if (idx != null && isRangeOp(s.where.operator)) {
+            rows = indexScan(s.table, idx, s.where);
+            plan = "index-scan on " + s.where.column + " (" + idx.name + ")";
+        } else {
+            for (Map.Entry<String, String> e : scanTable(s.table)) {
+                List<String> row = RowCodec.decode(e.getValue());
+                if (s.where == null || evalWhere(s.where, schema, row)) rows.add(row);
+            }
+            plan = "full-scan"
+                 + (s.where != null && idx == null ? " (no index on " + s.where.column + ")" : "");
         }
 
-        // ORDER BY (optional; by any schema column)
         if (s.orderBy != null) {
             int oi = schema.columnIndex(s.orderBy);
             if (oi >= 0) {
@@ -140,48 +191,111 @@ public final class RelationalEngine {
                 if (s.orderDesc) Collections.reverse(rows);
             }
         }
-
-        // LIMIT (optional)
         if (s.limit >= 0 && rows.size() > s.limit) rows = rows.subList(0, s.limit);
 
-        // project
         List<List<String>> out = new ArrayList<>();
         for (List<String> row : rows) {
             List<String> r = new ArrayList<>();
             for (String c : proj) r.add(row.get(schema.columnIndex(c)));
             out.add(r);
         }
-        return render(proj, out);
+        return "-- plan: " + plan + "\n" + render(proj, out);
     }
 
     private String delete(DeleteStatement s) throws IOException {
         TableSchema schema = catalog.getTable(s.table);
         if (schema == null) return "ERROR: no such table: " + s.table;
 
-        List<String> toDelete = new ArrayList<>();
+        List<Map.Entry<String, List<String>>> victims = new ArrayList<>();
         for (Map.Entry<String, String> e : scanTable(s.table)) {
             List<String> row = RowCodec.decode(e.getValue());
-            if (s.where == null || evalWhere(s.where, schema, row)) toDelete.add(e.getKey());
+            if (s.where == null || evalWhere(s.where, schema, row)) {
+                victims.add(Map.entry(e.getKey(), row));
+            }
         }
-        for (String k : toDelete) engine.delete(k);
-        return "OK: " + toDelete.size() + (toDelete.size() == 1 ? " row deleted" : " rows deleted");
+        for (Map.Entry<String, List<String>> v : victims) {
+            engine.delete(v.getKey());
+            removeIndexEntries(schema, v.getValue().get(0), v.getValue());
+        }
+        int n = victims.size();
+        return "OK: " + n + (n == 1 ? " row deleted" : " rows deleted");
+    }
+
+    // ---- index maintenance + scan ----------------------------------------
+
+    private void addIndexEntries(TableSchema schema, String pk, List<String> row) throws IOException {
+        for (IndexDef idx : catalog.indexesForTable(schema.name)) {
+            String colValue = row.get(schema.columnIndex(idx.column));
+            engine.set(indexKey(schema.name, idx.column, colValue, pk), pk);
+        }
+    }
+
+    private void removeIndexEntries(TableSchema schema, String pk, List<String> row) throws IOException {
+        for (IndexDef idx : catalog.indexesForTable(schema.name)) {
+            String colValue = row.get(schema.columnIndex(idx.column));
+            engine.delete(indexKey(schema.name, idx.column, colValue, pk));
+        }
+    }
+
+    /** Resolve a WHERE predicate via an index range-scan, fetching matching rows by PK. */
+    private List<List<String>> indexScan(String table, IndexDef idx, WhereClause w) throws IOException {
+        String prefix = indexPrefix(table, idx.column);
+        String v = unquote(w.value);
+        String lo, hi;
+        switch (w.operator) {
+            case "=":            lo = prefix + v; hi = prefix + v + Character.MAX_VALUE; break;
+            case ">": case ">=": lo = prefix + v; hi = prefix + Character.MAX_VALUE;     break;
+            case "<": case "<=": lo = prefix;     hi = prefix + v + Character.MAX_VALUE; break;
+            default:             lo = prefix;     hi = prefix + Character.MAX_VALUE;
+        }
+        List<List<String>> rows = new ArrayList<>();
+        for (Map.Entry<String, String> e : engine.scan(lo, hi)) {
+            String key = e.getKey();
+            int sep = key.indexOf(SEP, prefix.length());
+            if (sep < 0) continue;
+            String colValue = key.substring(prefix.length(), sep);
+            if (!opMatch(colValue, w.operator, v)) continue;       // over-capture safety filter
+            String rowVal = engine.get(rowKey(table, e.getValue()));
+            if (rowVal != null) rows.add(RowCodec.decode(rowVal));
+        }
+        return rows;
+    }
+
+    private static boolean isRangeOp(String op) {
+        return op.equals("=") || op.equals("<") || op.equals(">") || op.equals("<=") || op.equals(">=");
+    }
+
+    private static boolean opMatch(String colValue, String op, String v) {
+        int cmp = colValue.compareTo(v);
+        switch (op) {
+            case "=":  return colValue.equals(v);
+            case "<":  return cmp < 0;
+            case ">":  return cmp > 0;
+            case "<=": return cmp <= 0;
+            case ">=": return cmp >= 0;
+            default:   return false;
+        }
     }
 
     // ---- helpers ----------------------------------------------------------
 
-    /** All rows of a table: the key range [table/, table/￿]. */
     private List<Map.Entry<String, String>> scanTable(String table) throws IOException {
         return engine.scan(table + "/", table + "/" + Character.MAX_VALUE);
     }
 
-    /** Build a full row (schema order) from an INSERT's column list + values. */
+    private void deletePrefix(String prefix) throws IOException {
+        for (Map.Entry<String, String> e : new ArrayList<>(engine.scan(prefix, prefix + Character.MAX_VALUE))) {
+            engine.delete(e.getKey());
+        }
+    }
+
     private List<String> buildRow(TableSchema schema, List<String> cols, List<String> vals) {
         if (vals == null) return null;
         List<String> row = new ArrayList<>(Collections.nCopies(schema.columns.size(), ""));
-        if (cols == null || cols.isEmpty()) {                 // positional
+        if (cols == null || cols.isEmpty()) {
             if (vals.size() != schema.columns.size()) return null;
             for (int i = 0; i < vals.size(); i++) row.set(i, unquote(vals.get(i)));
-        } else {                                              // named
+        } else {
             if (cols.size() != vals.size()) return null;
             for (int i = 0; i < cols.size(); i++) {
                 int ci = schema.columnIndex(cols.get(i));
@@ -197,17 +311,9 @@ public final class RelationalEngine {
         if (ci < 0) return false;
         String left = row.get(ci);
         String right = unquote(w.value);
-        int cmp = left.compareTo(right);                      // lexicographic (Phase 4: typed)
-        switch (w.operator) {
-            case "=":    return left.equals(right);
-            case "!=":   return !left.equals(right);
-            case "<":    return cmp < 0;
-            case ">":    return cmp > 0;
-            case "<=":   return cmp <= 0;
-            case ">=":   return cmp >= 0;
-            case "LIKE": return likeMatch(left, right);
-            default:     return false;
-        }
+        if (w.operator.equals("LIKE")) return likeMatch(left, right);
+        if (w.operator.equals("!="))   return !left.equals(right);
+        return opMatch(left, w.operator, right);
     }
 
     private static boolean likeMatch(String s, String pattern) {
@@ -238,7 +344,7 @@ public final class RelationalEngine {
     }
 
     // ===================================================================== //
-    //  DEMO — Phases 1 + 2: DDL, INSERT, SELECT, DELETE                        //
+    //  DEMO — Phases 1–3: DDL, DML, CREATE INDEX, query planner                //
     // ===================================================================== //
 
     public static void main(String[] args) throws Exception {
@@ -251,13 +357,18 @@ public final class RelationalEngine {
             "INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)",
             "INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)",
             "INSERT INTO users (id, name, age) VALUES (3, 'Charlie', 35)",
-            "INSERT INTO users (id, name, age) VALUES (1, 'Dup', 99)",   // duplicate PK -> error
-            "SELECT * FROM users",
-            "SELECT name, age FROM users WHERE age > 25",                // projection + filter
-            "SELECT * FROM users ORDER BY age DESC",                     // ordering
-            "SELECT name FROM users WHERE id = 2",                       // point predicate
-            "DELETE FROM users WHERE id = 1",
-            "SELECT * FROM users",
+            "SELECT * FROM users WHERE age > 25",            // no index yet -> full-scan
+            "CREATE INDEX idx_age ON users(age)",
+            "SELECT * FROM users WHERE age > 25",            // now -> index-scan
+            "SELECT * FROM users WHERE name = 'Bob'",        // name not indexed -> full-scan
+            "CREATE INDEX idx_name ON users(name)",          // a second index
+            "SELECT * FROM users WHERE name = 'Bob'",        // now -> index-scan on name
+            "INSERT INTO users (id, name, age) VALUES (4, 'Dave', 30)",  // maintains both indexes
+            "SELECT * FROM users WHERE age = 30",            // index-scan finds Alice + Dave
+            "DELETE FROM users WHERE id = 1",                // removes Alice + her index entries
+            "SELECT * FROM users WHERE age = 30",            // index-scan -> only Dave now
+            "DROP INDEX idx_age",
+            "SELECT * FROM users WHERE age > 25",            // back to full-scan
         };
         for (String sql : script) {
             System.out.println("litedb> " + sql);
@@ -267,6 +378,6 @@ public final class RelationalEngine {
 
         engine.close();
         Files.walk(dir).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(java.io.File::delete);
-        System.out.println("[Phase 2 demo complete]");
+        System.out.println("[Phase 3 demo complete]");
     }
 }
