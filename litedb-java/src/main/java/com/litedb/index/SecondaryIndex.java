@@ -1,6 +1,6 @@
 package com.litedb.index;
 
-import com.litedb.btree.BTree;
+import com.litedb.btree.BPlusTree;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,7 +32,7 @@ public final class SecondaryIndex {
 
     private static final char SEP = '\0';   // U+0000 (NUL) - never appears in text values/keys
 
-    private final BTree tree = new BTree();     // composite -> primaryKey
+    private final BPlusTree tree = new BPlusTree();     // composite -> primaryKey
     private int entries = 0;
 
     private static String composite(String value, String key) {

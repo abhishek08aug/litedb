@@ -42,7 +42,7 @@ How data is physically stored and retrieved from disk.
 | [Storage Engine Internals](./03-storage-engines/storage-engine-internals.md) | LSM-Tree vs B+ Tree, compaction, page layout |
 
 **Implemented in:** `litedb-python/wal.py`, `litedb-python/memtable.py`, `litedb-python/sstable.py`, `litedb-python/lsm_engine.py`, `litedb-python/btree.py`  
-**Java:** `com.litedb.wal.WriteAheadLog`, `com.litedb.memtable.MemTable`, `com.litedb.sstable.*`, `com.litedb.lsm.LSMEngine`, `com.litedb.btree.BTree`
+**Java:** `com.litedb.wal.WriteAheadLog`, `com.litedb.memtable.MemTable`, `com.litedb.sstable.*`, `com.litedb.lsm.LSMEngine`, `com.litedb.btree.BPlusTree`
 
 ---
 
@@ -55,7 +55,7 @@ How databases answer queries in O(log n) instead of O(n).
 | [Indexing Deep Dive](./04-indexing/indexing-deep-dive.md) | B+ Tree, Hash, Bloom Filter, Inverted, Composite indexes |
 
 **Implemented in:** `litedb-python/sstable.py` (Bloom filter), `litedb-python/btree.py` (B+ Tree)  
-**Java:** `com.litedb.sstable.BloomFilter`, `com.litedb.btree.BTree`
+**Java:** `com.litedb.sstable.BloomFilter`, `com.litedb.btree.BPlusTree`
 
 ---
 
@@ -169,7 +169,7 @@ How to measure and explain what the database is doing.
 | TCP Server | [Module 05](./05-query-processing/query-processing-optimization.md) | `server.py` | `server.LiteDBServer` |
 | Async Replication | [Module 09](./09-replication/replication-consistency-models.md) | `replication.py` | `replication.ReplicationLog` |
 | MVCC Transactions | [Module 06](./06-mvcc/mvcc-concurrency-control.md) | `transactions.py` | `txn.MVCCStore` |
-| B+ Tree | [Module 03](./03-storage-engines/storage-engine-internals.md) | `btree.py` | `btree.BTree` |
+| B+ Tree | [Module 03](./03-storage-engines/storage-engine-internals.md) | `btree.py` | `btree.BPlusTree` |
 | SQL Parser & Executor | [Module 05](./05-query-processing/query-processing-optimization.md) | `sql_parser.py` | `sql.SQLParser` |
 | Consistent Hashing | [Module 08](./08-sharding/sharding-partitioning.md) | `sharding.py` | `sharding.ConsistentHashRing` |
 | Raft Consensus | [Module 09](./09-replication/replication-consistency-models.md) | `raft.py` | `raft.RaftNode` |

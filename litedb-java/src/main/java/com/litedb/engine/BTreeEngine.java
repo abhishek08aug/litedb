@@ -1,6 +1,6 @@
 package com.litedb.engine;
 
-import com.litedb.btree.BTree;
+import com.litedb.btree.BPlusTree;
 import com.litedb.wal.WALEntry;
 import com.litedb.wal.WriteAheadLog;
 
@@ -32,7 +32,7 @@ import java.util.Map;
 public final class BTreeEngine implements StorageEngine {
 
     public final String dataDir;
-    private final BTree tree = new BTree();
+    private final BPlusTree tree = new BPlusTree();
     private final WriteAheadLog wal;
 
     public BTreeEngine(String dataDir) throws IOException {

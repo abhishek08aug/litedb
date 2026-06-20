@@ -3,7 +3,7 @@ package com.litedb.btree;
 import java.util.*;
 
 /**
- * BTree — B+ Tree implementation (order = degree d, max 2d keys per node).
+ * BPlusTree — B+ Tree implementation (order = degree d, max 2d keys per node).
  *
  * CONCEPT:
  *   The B+ Tree is the index structure used by MySQL InnoDB, PostgreSQL,
@@ -27,7 +27,7 @@ import java.util.*;
  *     delete(key)        — O(log N)
  *     range(lo, hi)      — O(log N + k) where k = result count
  */
-public class BTree {
+public class BPlusTree {
 
     private static final int ORDER = 3; // d=3: max 6 keys per node, min 3
 
@@ -72,7 +72,7 @@ public class BTree {
     private int      size = 0;
     private LeafNode firstLeaf; // leftmost leaf (for full scan)
 
-    public BTree() {
+    public BPlusTree() {
         LeafNode leaf = new LeafNode();
         root      = leaf;
         firstLeaf = leaf;
@@ -362,7 +362,7 @@ public class BTree {
         System.out.println("B+ TREE DEMO");
         System.out.println("============================================================");
 
-        BTree tree = new BTree();
+        BPlusTree tree = new BPlusTree();
 
         // Insert
         System.out.println("\n[Step 1] Inserting 15 keys...");

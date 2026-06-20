@@ -83,7 +83,7 @@ javac --release 11 -d target/classes \
 java -cp target/classes com.litedb.demo.RunDemo
 
 # Run a single module
-java -cp target/classes com.litedb.btree.BTree
+java -cp target/classes com.litedb.btree.BPlusTree
 java -cp target/classes com.litedb.raft.RaftNode
 ```
 
@@ -249,7 +249,7 @@ The [`docs/`](./docs/) directory contains 10 modules and 18 deep-dive articles c
 | TCP Server | [Module 05](./docs/05-query-processing/query-processing-optimization.md) | `litedb-python/server.py` | `com.litedb.server.LiteDBServer` |
 | Async Replication | [Module 09](./docs/09-replication/replication-consistency-models.md) | `litedb-python/replication.py` | `com.litedb.replication.ReplicationLog` |
 | MVCC Transactions | [Module 06](./docs/06-mvcc/mvcc-concurrency-control.md) | `litedb-python/transactions.py` | `com.litedb.txn.MVCCStore` |
-| B+ Tree | [Module 03](./docs/03-storage-engines/storage-engine-internals.md) | `litedb-python/btree.py` | `com.litedb.btree.BTree` |
+| B+ Tree | [Module 03](./docs/03-storage-engines/storage-engine-internals.md) | `litedb-python/btree.py` | `com.litedb.btree.BPlusTree` |
 | SQL Parser & Executor | [Module 05](./docs/05-query-processing/query-processing-optimization.md) | `litedb-python/sql_parser.py` | `com.litedb.sql.SQLParser` |
 | Consistent Hashing | [Module 08](./docs/08-sharding/sharding-partitioning.md) | `litedb-python/sharding.py` | `com.litedb.sharding.ConsistentHashRing` |
 | Raft Consensus | [Module 09](./docs/09-replication/replication-consistency-models.md) | `litedb-python/raft.py` | `com.litedb.raft.RaftNode` |

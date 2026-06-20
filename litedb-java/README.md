@@ -22,7 +22,7 @@ All 13 modules are **fully implemented and tested**.
 | SSTable + Bloom Filter | `com.litedb.sstable` | `SSTableWriter`, `SSTableReader`, `BloomFilter` | ✅ complete |
 | LSM-Tree + Compaction | `com.litedb.lsm` | `LSMEngine` | ✅ complete |
 | MVCC Transactions | `com.litedb.txn` | `MVCCStore`, `MVCCStore.Transaction` | ✅ complete |
-| B+ Tree | `com.litedb.btree` | `BTree` | ✅ complete |
+| B+ Tree | `com.litedb.btree` | `BPlusTree` | ✅ complete |
 | SQL Parser | `com.litedb.sql` | `SQLParser`, `SQLParser.Statement` | ✅ complete |
 | Query Parser | `com.litedb.query` | `QueryParser`, `QueryResult` | ✅ complete |
 | TCP Server | `com.litedb.server` | `LiteDBServer` | ✅ complete |
@@ -108,7 +108,7 @@ Every module has its own `main()`:
 ```bash
 java -cp target/classes com.litedb.wal.WriteAheadLog
 java -cp target/classes com.litedb.memtable.MemTable
-java -cp target/classes com.litedb.btree.BTree
+java -cp target/classes com.litedb.btree.BPlusTree
 java -cp target/classes com.litedb.txn.MVCCStore
 java -cp target/classes com.litedb.raft.RaftNode
 java -cp target/classes com.litedb.sharding.ConsistentHashRing
@@ -171,7 +171,7 @@ litedb-java/
                 ├── txn/
                 │   └── MVCCStore.java         Versioned writes; snapshot isolation; VACUUM
                 ├── btree/
-                │   └── BTree.java             B+ Tree (order 3); node splits; linked leaf list
+                │   └── BPlusTree.java             B+ Tree (order 3); node splits; linked leaf list
                 ├── sql/
                 │   └── SQLParser.java         Tokenizer → AST for SELECT/INSERT/UPDATE/DELETE/CREATE
                 ├── query/
@@ -216,7 +216,7 @@ litedb-java/
 | `sstable/SSTableReader.java` | `sstable.py` | Binary search + Bloom filter read path |
 | `lsm/LSMEngine.java` | `lsm_engine.py` | WAL + MemTable + SSTable + compaction |
 | `txn/MVCCStore.java` | `transactions.py` | Versioned writes, snapshot isolation, VACUUM |
-| `btree/BTree.java` | `btree.py` | B+ Tree, node splits, linked leaf list |
+| `btree/BPlusTree.java` | `btree.py` | B+ Tree, node splits, linked leaf list |
 | `sql/SQLParser.java` | `sql_parser.py` | Tokenizer → AST → executor |
 | `query/QueryParser.java` | `query_parser.py` | SET/GET/DELETE/SCAN command parser |
 | `server/LiteDBServer.java` | `server.py` | Multi-client TCP server |
@@ -259,7 +259,7 @@ litedb-java/
 - Tombstone value `"__DELETED__"` marks deletes without touching disk
 - `sizeBytes` tracked; `shouldFlush()` triggers SSTable write when limit exceeded
 
-### B+ Tree (`BTree.java`)
+### B+ Tree (`BPlusTree.java`)
 - Order d=3: max 6 keys per node, min 3 (except root)
 - All data in **leaf nodes**; internal nodes hold separator keys only
 - Leaf nodes linked in doubly-linked list → O(k + log n) range scans

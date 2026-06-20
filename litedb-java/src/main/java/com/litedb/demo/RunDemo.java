@@ -2,7 +2,7 @@ package com.litedb.demo;
 
 import com.litedb.auth.AuthManager;
 import com.litedb.auth.AuthManager.*;
-import com.litedb.btree.BTree;
+import com.litedb.btree.BPlusTree;
 import com.litedb.memtable.MemTable;
 import com.litedb.metrics.MetricsRegistry;
 import com.litedb.metrics.MetricsRegistry.*;
@@ -132,7 +132,7 @@ public class RunDemo {
         banner("MODULE 3: B+ Tree Index");
 
         step(6, "Build B+ Tree index on user data");
-        BTree index = new BTree();
+        BPlusTree index = new BPlusTree();
         for (String[] rec : records) {
             index.insert(rec[0], rec[1]);
         }
