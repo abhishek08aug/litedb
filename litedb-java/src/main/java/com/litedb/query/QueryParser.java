@@ -1,5 +1,6 @@
 package com.litedb.query;
 
+import com.litedb.engine.StorageEngine;
 import com.litedb.lsm.LSMEngine;
 
 import java.io.IOException;
@@ -20,9 +21,9 @@ import java.util.*;
  */
 public class QueryParser {
 
-    private final LSMEngine engine;
+    private final StorageEngine engine;
 
-    public QueryParser(LSMEngine engine) {
+    public QueryParser(StorageEngine engine) {
         this.engine = engine;
     }
 
@@ -65,6 +66,7 @@ public class QueryParser {
             case "DELETE":
             case "DEL":    return cmdDelete(args);
             case "SCAN":   return cmdScan(args);
+            case "FINDVAL": return cmdFindVal(args);
             case "STATS":  return cmdStats();
             case "PING":   return new QueryResult(QueryResult.Status.PONG);
             case "QUIT":
@@ -110,6 +112,18 @@ public class QueryParser {
         return new QueryResult(QueryResult.Status.SCAN, null, rows);
     }
 
+    private QueryResult cmdFindVal(List<String> args) throws IOException {
+        if (args.size() != 2) return error("Usage: FINDVAL <low_value> <high_value>");
+        if (!engine.supportsSecondaryIndex())
+            return error("Engine '" + engine.name() + "' has no secondary index (start with --engine lsm)");
+        String lo = args.get(0), hi = args.get(1);
+        if (lo.compareTo(hi) > 0) return error("low_value must be <= high_value");
+        List<String> keys = engine.findByValueRange(lo, hi);
+        List<String[]> rows = new ArrayList<>();
+        for (String k : keys) rows.add(new String[]{k, engine.get(k)});   // show the matched records
+        return new QueryResult(QueryResult.Status.SCAN, null, rows);
+    }
+
     private QueryResult cmdStats() {
         Map<String, Object> stats = engine.stats();
         StringBuilder sb = new StringBuilder();
@@ -123,7 +137,7 @@ public class QueryParser {
     private QueryResult cmdHelp() {
         return new QueryResult(QueryResult.Status.VALUE,
             "Commands: SET <key> <value> | GET <key> | DELETE <key> | " +
-            "SCAN <start> <end> | STATS | PING | QUIT");
+            "SCAN <start> <end> | FINDVAL <lowVal> <highVal> | STATS | PING | QUIT");
     }
 
     private static QueryResult error(String msg) {

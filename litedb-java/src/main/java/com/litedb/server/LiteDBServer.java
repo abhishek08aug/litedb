@@ -1,5 +1,7 @@
 package com.litedb.server;
 
+import com.litedb.engine.BTreeEngine;
+import com.litedb.engine.StorageEngine;
 import com.litedb.lsm.LSMEngine;
 import com.litedb.query.QueryParser;
 import com.litedb.query.QueryResult;
@@ -36,7 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class LiteDBServer {
 
     private final int         port;
-    private final LSMEngine   engine;
+    private final StorageEngine engine;
     private final ExecutorService threadPool;
     private       ServerSocket serverSocket;
     private volatile boolean  running = false;
@@ -44,7 +46,7 @@ public class LiteDBServer {
     private final AtomicLong connectionsAccepted = new AtomicLong(0);
     private final AtomicLong commandsExecuted    = new AtomicLong(0);
 
-    public LiteDBServer(int port, LSMEngine engine) {
+    public LiteDBServer(int port, StorageEngine engine) {
         this.port       = port;
         this.engine     = engine;
         this.threadPool = Executors.newCachedThreadPool(r -> {
@@ -136,18 +138,28 @@ public class LiteDBServer {
     //  existing SSTables on startup). Stop with Ctrl-C.
     //
     public static void main(String[] args) throws Exception {
-        int    port    = 7379;
-        String dataDir = "./litedb-data";
+        int    port       = 7379;
+        String dataDir    = "./litedb-data";
+        String engineName = "lsm";
 
         for (int i = 0; i < args.length - 1; i++) {
             switch (args[i]) {
-                case "--port":     port    = Integer.parseInt(args[i + 1]); break;
-                case "--data-dir": dataDir = args[i + 1];                    break;
-                default: /* ignore */                                        break;
+                case "--port":     port       = Integer.parseInt(args[i + 1]); break;
+                case "--data-dir": dataDir    = args[i + 1];                    break;
+                case "--engine":   engineName = args[i + 1].toLowerCase();      break;
+                default: /* ignore */                                           break;
             }
         }
 
-        LSMEngine    engine = new LSMEngine(dataDir);
+        StorageEngine engine;
+        switch (engineName) {
+            case "lsm":   engine = new LSMEngine(dataDir);   break;
+            case "btree": engine = new BTreeEngine(dataDir); break;
+            default:
+                System.err.println("Unknown --engine '" + engineName + "' (use: lsm | btree)");
+                return;
+        }
+
         LiteDBServer server = new LiteDBServer(port, engine);
 
         // Graceful shutdown on Ctrl-C: stop accepting, flush, close the engine.
@@ -155,7 +167,7 @@ public class LiteDBServer {
             try { server.stop(); engine.close(); } catch (Exception ignored) {}
         }, "litedb-shutdown"));
 
-        System.out.println("[LiteDB] data dir: " + dataDir);
+        System.out.println("[LiteDB] engine: " + engine.name() + "   data dir: " + dataDir);
         System.out.println("[LiteDB] connect with:  java -cp target/classes com.litedb.client.LiteDBClient"
                 + (port == 7379 ? "" : " --port " + port));
         System.out.println("[LiteDB]          or:  nc localhost " + port);

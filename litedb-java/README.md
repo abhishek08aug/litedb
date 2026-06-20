@@ -26,6 +26,9 @@ All 13 modules are **fully implemented and tested**.
 | SQL Parser | `com.litedb.sql` | `SQLParser`, `SQLParser.Statement` | ✅ complete |
 | Query Parser | `com.litedb.query` | `QueryParser`, `QueryResult` | ✅ complete |
 | TCP Server | `com.litedb.server` | `LiteDBServer` | ✅ complete |
+| TCP Client | `com.litedb.client` | `LiteDBClient` | ✅ complete |
+| Pluggable Storage Engine | `com.litedb.engine` | `StorageEngine`, `BTreeEngine` | ✅ complete |
+| Secondary Index | `com.litedb.index` | `SecondaryIndex` | ✅ complete |
 | Async Replication | `com.litedb.replication` | `ReplicationLog` | ✅ complete |
 | Consistent Hashing | `com.litedb.sharding` | `ConsistentHashRing` | ✅ complete |
 | Raft Consensus | `com.litedb.raft` | `RaftNode` | ✅ complete |
@@ -57,7 +60,7 @@ LiteDB separates three roles: the **server** (`com.litedb.server.LiteDBServer`) 
 ```bash
 # Terminal 1 — start the server (persistent; data in ./litedb-data, Ctrl-C to stop)
 java -cp target/classes com.litedb.server.LiteDBServer
-#   options: --port 7379  --data-dir ./litedb-data
+#   options: --port 7379  --data-dir ./litedb-data  --engine lsm|btree
 
 # Terminal 2 — connect with the interactive client
 java -cp target/classes com.litedb.client.LiteDBClient
@@ -70,7 +73,26 @@ java -cp target/classes com.litedb.client.LiteDBClient --demo
 nc localhost 7379
 ```
 
-Commands: `PING`, `SET k v`, `GET k`, `DELETE k`, `SCAN start end`, `STATS`, `HELP`, `QUIT`. Data persists across restarts — on startup the engine replays the WAL and loads existing SSTables.
+Commands: `PING`, `SET k v`, `GET k`, `DELETE k`, `SCAN start end`, `FINDVAL lowVal highVal`, `STATS`, `HELP`, `QUIT`. Data persists across restarts — on startup the engine replays the WAL and loads existing SSTables.
+
+### Pluggable storage engine + secondary index
+
+The server runs against a `StorageEngine` chosen at startup with `--engine`:
+
+| `--engine` | Class | Model |
+|---|---|---|
+| `lsm` (default) | `com.litedb.lsm.LSMEngine` | Write-optimized LSM-Tree (WAL + MemTable + SSTables + compaction) |
+| `btree` | `com.litedb.engine.BTreeEngine` | Read-optimized in-memory B+Tree, durable via WAL |
+
+This mirrors how real databases let the workload pick an engine (e.g. MySQL's InnoDB B-tree vs MyRocks LSM).
+
+The **LSM engine** additionally maintains a **secondary index** (`com.litedb.index.SecondaryIndex`) — a B+Tree mapping stored *values* → primary keys, updated on every write and rebuilt from the data on startup. It powers a reverse lookup that avoids a full scan:
+
+```
+FINDVAL <lowValue> <highValue>   # primary keys whose value is in [low, high], served from the index
+```
+
+`FINDVAL` is available only on `--engine lsm`; the B+Tree engine reports it as unsupported.
 
 ### With Maven (if your settings.xml points to a reachable repo)
 

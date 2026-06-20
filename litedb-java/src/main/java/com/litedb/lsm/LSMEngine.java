@@ -5,6 +5,8 @@ import com.litedb.sstable.SSTableReader;
 import com.litedb.sstable.SSTableWriter;
 import com.litedb.wal.WALEntry;
 import com.litedb.wal.WriteAheadLog;
+import com.litedb.engine.StorageEngine;
+import com.litedb.index.SecondaryIndex;
 
 import java.io.*;
 import java.nio.file.*;
@@ -26,7 +28,7 @@ import java.util.stream.Collectors;
  *   Write path: WAL → MemTable → (flush) → SSTable
  *   Compaction: merge L0 + L1 → new L1, drop tombstones
  */
-public class LSMEngine implements Closeable {
+public class LSMEngine implements StorageEngine {
 
     private static final String TOMBSTONE = "__DELETED__";
 
@@ -38,6 +40,7 @@ public class LSMEngine implements Closeable {
     private final List<SSTableReader> l1 = new ArrayList<>();
     private final ReentrantLock   lock      = new ReentrantLock();
     private final ReentrantLock   flushLock = new ReentrantLock();
+    private final SecondaryIndex  valueIndex = new SecondaryIndex(); // value -> primary keys
 
     private int sstSequence = 0;
 
@@ -56,14 +59,18 @@ public class LSMEngine implements Closeable {
     // ------------------------------------------------------------------ //
 
     public void set(String key, String value) throws IOException {
+        String old = get(key);                 // prior value, to maintain the secondary index
         wal.appendSet(key, value);
         memtable.set(key, value);
+        valueIndex.update(key, old, value);
         maybeFlush();
     }
 
     public void delete(String key) throws IOException {
+        String old = get(key);
         wal.appendDelete(key);
         memtable.delete(key);
+        if (old != null) valueIndex.remove(key, old);
         maybeFlush();
     }
 
@@ -277,6 +284,31 @@ public class LSMEngine implements Closeable {
             replayed++;
         }
         if (replayed > 0) System.out.println("[LSM] Recovered " + replayed + " entries from WAL");
+
+        rebuildIndex();
+    }
+
+    /** Rebuild the in-memory secondary index from all live data (called after recovery). */
+    private void rebuildIndex() throws IOException {
+        for (Map.Entry<String, String> e : scan("", "" + Character.MAX_VALUE)) {
+            valueIndex.add(e.getKey(), e.getValue());
+        }
+    }
+
+    @Override
+    public String name() {
+        return "lsm";
+    }
+
+    @Override
+    public boolean supportsSecondaryIndex() {
+        return true;
+    }
+
+    /** Reverse lookup via the secondary index: primary keys whose value is in [lo, hi]. */
+    @Override
+    public List<String> findByValueRange(String lowValue, String highValue) {
+        return valueIndex.keysInValueRange(lowValue, highValue);
     }
 
     // ------------------------------------------------------------------ //
@@ -298,14 +330,17 @@ public class LSMEngine implements Closeable {
         System.out.println("[LSM] Engine closed.");
     }
 
+    @Override
     public Map<String, Object> stats() {
         Map<String, Object> s = new LinkedHashMap<>();
+        s.put("engine",             "lsm");
         s.put("memtable_entries",   memtable.entryCount());
         s.put("memtable_size_bytes", memtable.sizeBytes());
         s.put("l0_sstables",        l0.size());
         s.put("l1_sstables",        l1.size());
         s.put("l0_entries",         l0.stream().mapToInt(r -> r.entryCount).sum());
         s.put("l1_entries",         l1.stream().mapToInt(r -> r.entryCount).sum());
+        s.put("index_entries",      valueIndex.size());
         return s;
     }
 
