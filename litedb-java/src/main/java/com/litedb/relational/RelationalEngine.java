@@ -127,10 +127,11 @@ public final class RelationalEngine {
         catalog.createIndex(new IndexDef(name, table, column));
         // build it from existing rows
         int ci = schema.columnIndex(column);
+        String type = schema.columnType(column);
         int built = 0;
         for (Map.Entry<String, String> e : scanTable(table)) {
             List<String> row = RowCodec.decode(e.getValue());
-            engine.set(indexKey(table, column, row.get(ci), row.get(0)), row.get(0));
+            engine.set(indexKey(table, column, TypeCodec.encode(type, row.get(ci)), row.get(0)), row.get(0));
             built++;
         }
         return "OK: created index " + name + " ON " + table + "(" + column + ") — " + built + " entries";
@@ -173,7 +174,7 @@ public final class RelationalEngine {
         String plan;
         IndexDef idx = (s.where != null) ? catalog.indexForColumn(s.table, s.where.column) : null;
         if (idx != null && isRangeOp(s.where.operator)) {
-            rows = indexScan(s.table, idx, s.where);
+            rows = indexScan(schema, idx, s.where);
             plan = "index-scan on " + s.where.column + " (" + idx.name + ")";
         } else {
             for (Map.Entry<String, String> e : scanTable(s.table)) {
@@ -187,7 +188,8 @@ public final class RelationalEngine {
         if (s.orderBy != null) {
             int oi = schema.columnIndex(s.orderBy);
             if (oi >= 0) {
-                rows.sort(Comparator.comparing(r -> r.get(oi)));
+                String otype = schema.columns.get(oi).type;
+                rows.sort((a, b) -> TypeCodec.compare(otype, a.get(oi), b.get(oi)));
                 if (s.orderDesc) Collections.reverse(rows);
             }
         }
@@ -225,22 +227,25 @@ public final class RelationalEngine {
 
     private void addIndexEntries(TableSchema schema, String pk, List<String> row) throws IOException {
         for (IndexDef idx : catalog.indexesForTable(schema.name)) {
-            String colValue = row.get(schema.columnIndex(idx.column));
-            engine.set(indexKey(schema.name, idx.column, colValue, pk), pk);
+            String enc = TypeCodec.encode(schema.columnType(idx.column),
+                                          row.get(schema.columnIndex(idx.column)));
+            engine.set(indexKey(schema.name, idx.column, enc, pk), pk);
         }
     }
 
     private void removeIndexEntries(TableSchema schema, String pk, List<String> row) throws IOException {
         for (IndexDef idx : catalog.indexesForTable(schema.name)) {
-            String colValue = row.get(schema.columnIndex(idx.column));
-            engine.delete(indexKey(schema.name, idx.column, colValue, pk));
+            String enc = TypeCodec.encode(schema.columnType(idx.column),
+                                          row.get(schema.columnIndex(idx.column)));
+            engine.delete(indexKey(schema.name, idx.column, enc, pk));
         }
     }
 
     /** Resolve a WHERE predicate via an index range-scan, fetching matching rows by PK. */
-    private List<List<String>> indexScan(String table, IndexDef idx, WhereClause w) throws IOException {
+    private List<List<String>> indexScan(TableSchema schema, IndexDef idx, WhereClause w) throws IOException {
+        String table = schema.name;
         String prefix = indexPrefix(table, idx.column);
-        String v = unquote(w.value);
+        String v = TypeCodec.encode(schema.columnType(idx.column), unquote(w.value)); // order-preserving
         String lo, hi;
         switch (w.operator) {
             case "=":            lo = prefix + v; hi = prefix + v + Character.MAX_VALUE; break;
@@ -312,8 +317,16 @@ public final class RelationalEngine {
         String left = row.get(ci);
         String right = unquote(w.value);
         if (w.operator.equals("LIKE")) return likeMatch(left, right);
-        if (w.operator.equals("!="))   return !left.equals(right);
-        return opMatch(left, w.operator, right);
+        int cmp = TypeCodec.compare(schema.columns.get(ci).type, left, right);   // typed compare
+        switch (w.operator) {
+            case "=":  return cmp == 0;
+            case "!=": return cmp != 0;
+            case "<":  return cmp < 0;
+            case ">":  return cmp > 0;
+            case "<=": return cmp <= 0;
+            case ">=": return cmp >= 0;
+            default:   return false;
+        }
     }
 
     private static boolean likeMatch(String s, String pattern) {
@@ -353,22 +366,19 @@ public final class RelationalEngine {
         RelationalEngine db = new RelationalEngine(engine);
 
         String[] script = {
-            "CREATE TABLE users (id INT, name TEXT, age INT)",
-            "INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)",
-            "INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)",
-            "INSERT INTO users (id, name, age) VALUES (3, 'Charlie', 35)",
-            "SELECT * FROM users WHERE age > 25",            // no index yet -> full-scan
-            "CREATE INDEX idx_age ON users(age)",
-            "SELECT * FROM users WHERE age > 25",            // now -> index-scan
-            "SELECT * FROM users WHERE name = 'Bob'",        // name not indexed -> full-scan
-            "CREATE INDEX idx_name ON users(name)",          // a second index
-            "SELECT * FROM users WHERE name = 'Bob'",        // now -> index-scan on name
-            "INSERT INTO users (id, name, age) VALUES (4, 'Dave', 30)",  // maintains both indexes
-            "SELECT * FROM users WHERE age = 30",            // index-scan finds Alice + Dave
-            "DELETE FROM users WHERE id = 1",                // removes Alice + her index entries
-            "SELECT * FROM users WHERE age = 30",            // index-scan -> only Dave now
-            "DROP INDEX idx_age",
-            "SELECT * FROM users WHERE age > 25",            // back to full-scan
+            "CREATE TABLE nums (id INT, n INT)",
+            "INSERT INTO nums (id, n) VALUES (1, 5)",
+            "INSERT INTO nums (id, n) VALUES (2, 100)",
+            "INSERT INTO nums (id, n) VALUES (3, 9)",
+            "INSERT INTO nums (id, n) VALUES (4, 10)",
+            "INSERT INTO nums (id, n) VALUES (5, -7)",
+            // Without typed encoding, "10" < "9" < "100" lexicographically — all wrong.
+            "SELECT * FROM nums ORDER BY n",          // typed order: -7, 5, 9, 10, 100
+            "SELECT * FROM nums WHERE n > 9",         // full-scan, typed: 10, 100
+            "CREATE INDEX idx_n ON nums(n)",
+            "SELECT * FROM nums WHERE n > 9",         // index-scan, typed: 10, 100 (same result)
+            "SELECT * FROM nums WHERE n <= 9 ORDER BY n",  // index-scan: -7, 5, 9
+            "SELECT * FROM nums WHERE n = 100",       // index-scan: 100
         };
         for (String sql : script) {
             System.out.println("litedb> " + sql);
@@ -378,6 +388,6 @@ public final class RelationalEngine {
 
         engine.close();
         Files.walk(dir).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(java.io.File::delete);
-        System.out.println("[Phase 3 demo complete]");
+        System.out.println("[Phase 4 demo complete]");
     }
 }

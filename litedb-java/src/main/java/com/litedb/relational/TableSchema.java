@@ -26,6 +26,11 @@ public final class TableSchema {
         return columns.get(0);
     }
 
+    public String columnType(String columnName) {
+        int i = columnIndex(columnName);
+        return i < 0 ? null : columns.get(i).type;
+    }
+
     public int columnIndex(String columnName) {
         for (int i = 0; i < columns.size(); i++) {
             if (columns.get(i).name.equals(columnName)) return i;
