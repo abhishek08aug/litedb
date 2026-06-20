@@ -123,7 +123,8 @@ The **server** (`server.py`) brings up the database; the **client** (`client.py`
 
 ```bash
 # Terminal 1 — start the server (persistent; Ctrl-C to stop)
-python server.py --port 7379 --data-dir ./data/primary
+python server.py --port 7379 --data-dir ./data/primary --engine lsm
+#   --engine lsm (default) or btree
 
 #   a replica node (replicates from primary):
 python server.py --port 7380 --data-dir ./data/replica --replica-of localhost:7379
@@ -141,7 +142,26 @@ python client.py --demo
 nc localhost 7379
 ```
 
-Commands: `PING`, `SET k v`, `GET k`, `DELETE k`, `SCAN start end`, `STATS`, `HELP`, `QUIT`.
+Commands: `PING`, `SET k v`, `GET k`, `DELETE k`, `SCAN start end`, `FINDVAL lowVal highVal`, `STATS`, `HELP`, `QUIT`.
+
+### Pluggable storage engine + secondary index
+
+The server runs against a `StorageEngine` (`storage_engine.py`) chosen at startup with `--engine`:
+
+| `--engine` | Module | Model |
+|---|---|---|
+| `lsm` (default) | `lsm_engine.py` | Write-optimized LSM-Tree (WAL + MemTable + SSTables + compaction) |
+| `btree` | `btree_engine.py` | Read-optimized in-memory B+Tree, durable via WAL |
+
+This mirrors how real databases let the workload pick an engine (e.g. MySQL's InnoDB B-tree vs MyRocks LSM).
+
+The **LSM engine** also maintains a **secondary index** (`secondary_index.py`) — a B+Tree mapping stored *values* → primary keys, updated on every write and rebuilt from the data on startup. It powers a reverse lookup that avoids a full scan:
+
+```
+FINDVAL <lowValue> <highValue>   # primary keys whose value is in [low, high], served from the index
+```
+
+`FINDVAL` is available only on `--engine lsm`; the B+Tree engine reports it as unsupported.
 
 ---
 

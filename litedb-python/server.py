@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402  — registers numbered files under short names
 
 from lsm_engine import LSMEngine          # type: ignore
+from btree_engine import BTreeEngine      # type: ignore
 from query_parser import QueryParser      # type: ignore
 
 
@@ -91,15 +92,15 @@ class LiteDBServer:
     Accepts connections and spawns a ClientHandler thread per client.
     """
 
-    def __init__(self, host: str, port: int, data_dir: str):
+    def __init__(self, host: str, port: int, engine):
         self.host = host
         self.port = port
-        self.data_dir = data_dir
+        self.data_dir = getattr(engine, "data_dir", "")
         self._client_count = 0
         self._running = False
 
-        # Shared storage engine (thread-safe)
-        self._engine = LSMEngine(data_dir)
+        # Shared storage engine (thread-safe), built by the caller
+        self._engine = engine
 
         # TCP socket
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -108,7 +109,7 @@ class LiteDBServer:
         self._sock.listen(128)
 
         print(f"[Server] LiteDB listening on {host}:{port}")
-        print(f"[Server] Data directory: {data_dir!r}")
+        print(f"[Server] Engine: {self._engine.name()}   Data directory: {self.data_dir!r}")
         print(f"[Server] Connect with: nc {host} {port}")
 
     def serve_forever(self):
@@ -141,9 +142,12 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=7379, help="Port (default: 7379)")
     parser.add_argument("--data-dir", default="./data/primary", help="Data directory")
+    parser.add_argument("--engine", default="lsm", choices=["lsm", "btree"],
+                        help="Storage engine (default: lsm)")
     args = parser.parse_args()
 
-    server = LiteDBServer(args.host, args.port, args.data_dir)
+    engine = LSMEngine(args.data_dir) if args.engine == "lsm" else BTreeEngine(args.data_dir)
+    server = LiteDBServer(args.host, args.port, engine)
 
     # Graceful shutdown on Ctrl+C
     def handle_signal(sig, frame):

@@ -51,9 +51,11 @@ import _loader  # noqa: F401, E402
 from wal import WriteAheadLog  # type: ignore
 from memtable import MemTable, TOMBSTONE  # type: ignore
 from sstable import SSTableWriter, SSTableReader  # type: ignore
+from storage_engine import StorageEngine  # type: ignore
+from secondary_index import SecondaryIndex  # type: ignore
 
 
-class LSMEngine:
+class LSMEngine(StorageEngine):
     """
     Full LSM-Tree storage engine.
 
@@ -89,8 +91,12 @@ class LSMEngine:
         # SSTable sequence counter (for unique filenames)
         self._sst_sequence = 0
 
+        # Secondary value index (value -> primary keys); rebuilt from data after recovery
+        self._value_index = SecondaryIndex()
+
         # Recover from WAL and load existing SSTables
         self._recover()
+        self._rebuild_index()
 
         print(f"[LSM] Engine started at {data_dir!r}")
         print(f"[LSM] MemTable: {self._memtable}")
@@ -108,9 +114,11 @@ class LSMEngine:
         2. MemTable insert (fast)
         3. Trigger flush if MemTable is full
         """
+        old = self.get(key)  # prior value, to maintain the secondary index
         with self._lock:
             self._wal.append("SET", key, value)
             self._memtable.set(key, value)
+            self._value_index.update(key, old, value)
 
         # Check if flush needed (outside main lock to reduce contention)
         if self._memtable.should_flush():
@@ -120,9 +128,12 @@ class LSMEngine:
         """
         Delete a key by writing a tombstone.
         """
+        old = self.get(key)
         with self._lock:
             self._wal.append("DELETE", key)
             self._memtable.delete(key)
+            if old is not None:
+                self._value_index.remove(key, old)
 
         if self._memtable.should_flush():
             self._flush_memtable()
@@ -394,15 +405,36 @@ class LSMEngine:
         self._wal.close()
         print("[LSM] Engine closed.")
 
+    # ------------------------------------------------------------------ #
+    #  Engine identity + secondary index                                   #
+    # ------------------------------------------------------------------ #
+
+    def name(self) -> str:
+        return "lsm"
+
+    def supports_secondary_index(self) -> bool:
+        return True
+
+    def find_by_value_range(self, low_value: str, high_value: str) -> list[str]:
+        """Reverse lookup via the secondary index: primary keys with value in [low, high]."""
+        return self._value_index.keys_in_value_range(low_value, high_value)
+
+    def _rebuild_index(self) -> None:
+        """Rebuild the in-memory secondary index from all live data (after recovery)."""
+        for key, value in self.scan("", chr(0x10FFFF)):
+            self._value_index.add(key, value)
+
     def stats(self) -> dict:
         with self._lock:
             return {
+                "engine": "lsm",
                 "memtable_entries": self._memtable.entry_count(),
                 "memtable_size_bytes": self._memtable.size_bytes(),
                 "l0_sstables": len(self._levels[0]),
                 "l1_sstables": len(self._levels[1]),
                 "l0_entries": sum(s.entry_count for s in self._levels[0]),
                 "l1_entries": sum(s.entry_count for s in self._levels[1]),
+                "index_entries": self._value_index.size(),
             }
 
     def __repr__(self) -> str:

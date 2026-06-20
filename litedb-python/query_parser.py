@@ -123,6 +123,8 @@ class QueryParser:
             return self._cmd_delete(args)
         elif command == "SCAN":
             return self._cmd_scan(args)
+        elif command == "FINDVAL":
+            return self._cmd_findval(args)
         elif command == "STATS":
             return self._cmd_stats(args)
         elif command == "PING":
@@ -185,6 +187,22 @@ class QueryParser:
         rows = list(self._engine.scan(start_key, end_key))
         return QueryResult("SCAN", rows=rows)
 
+    def _cmd_findval(self, args: list[str]) -> QueryResult:
+        """FINDVAL <low_value> <high_value> — keys whose value is in [low, high], via the index"""
+        if len(args) != 2:
+            return QueryResult("ERROR", "Usage: FINDVAL <low_value> <high_value>")
+        if not self._engine.supports_secondary_index():
+            return QueryResult(
+                "ERROR",
+                f"Engine {self._engine.name()!r} has no secondary index (start with --engine lsm)",
+            )
+        low, high = args[0], args[1]
+        if low > high:
+            return QueryResult("ERROR", "low_value must be <= high_value")
+        keys = self._engine.find_by_value_range(low, high)
+        rows = [(k, self._engine.get(k)) for k in keys]  # show the matched records
+        return QueryResult("SCAN", rows=rows)
+
     def _cmd_stats(self, args: list[str]) -> QueryResult:
         """STATS — show engine statistics"""
         stats = self._engine.stats()
@@ -198,6 +216,7 @@ class QueryParser:
             "GET <key> | "
             "DELETE <key> | "
             "SCAN <start> <end> | "
+            "FINDVAL <lowVal> <highVal> | "
             "STATS | "
             "PING | "
             "QUIT"
