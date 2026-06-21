@@ -138,6 +138,43 @@ class LSMEngine(StorageEngine):
         if self._memtable.should_flush():
             self._flush_memtable()
 
+    def supports_atomic_batch(self) -> bool:
+        return True
+
+    def write_batch(self, ops) -> None:
+        """Atomically apply a batch of writes: framed in the WAL between BEGIN and COMMIT
+        markers, then applied to the MemTable and value index. On recovery the batch is
+        replayed only if its COMMIT is present (a crash mid-batch leaves no partial state)."""
+        with self._lock:
+            self._wal.append("BEGIN", "")
+            for op in ops:
+                if op.is_delete:
+                    self._wal.append("DELETE", op.key)
+                else:
+                    self._wal.append("SET", op.key, op.value)
+            self._wal.append("COMMIT", "")
+            for op in ops:
+                old = self.get(op.key)
+                if op.is_delete:
+                    self._memtable.delete(op.key)
+                    if old is not None:
+                        self._value_index.remove(op.key, old)
+                else:
+                    self._memtable.set(op.key, op.value)
+                    self._value_index.update(op.key, old, op.value)
+        if self._memtable.should_flush():
+            self._flush_memtable()
+
+    def write_batch_simulate_crash(self, ops) -> None:
+        """TEST ONLY — log BEGIN + ops but never COMMIT and don't apply; recovery must discard."""
+        with self._lock:
+            self._wal.append("BEGIN", "")
+            for op in ops:
+                if op.is_delete:
+                    self._wal.append("DELETE", op.key)
+                else:
+                    self._wal.append("SET", op.key, op.value)
+
     # ------------------------------------------------------------------ #
     #  Read operations                                                     #
     # ------------------------------------------------------------------ #
@@ -370,17 +407,42 @@ class LSMEngine(StorageEngine):
                 except Exception as e:
                     print(f"[LSM] Warning: could not load SSTable {path!r}: {e}")
 
-        # Replay WAL into MemTable
+        # Replay WAL into MemTable (batch-aware: a batch is applied only if its COMMIT marker
+        # is present; an uncommitted trailing batch — a crash mid-write — is discarded)
         replayed = 0
+        discarded = 0
+        in_batch = False
+        batch: list = []
         for entry in self._wal.read_all():
-            if entry.operation == "SET":
-                self._memtable.set(entry.key, entry.value or "")
-            elif entry.operation == "DELETE":
-                self._memtable.delete(entry.key)
-            replayed += 1
+            if entry.operation == "BEGIN":
+                in_batch = True
+                batch = []
+            elif entry.operation == "COMMIT":
+                for b in batch:
+                    self._apply_wal_entry(b)
+                replayed += len(batch)
+                batch = []
+                in_batch = False
+            else:
+                if in_batch:
+                    batch.append(entry)
+                else:
+                    self._apply_wal_entry(entry)
+                    replayed += 1
+        if in_batch:
+            discarded = len(batch)
 
-        if replayed:
-            print(f"[LSM] Recovered {replayed} entries from WAL")
+        if replayed or discarded:
+            msg = f"[LSM] Recovered {replayed} entries"
+            if discarded:
+                msg += f" (discarded {discarded} from an uncommitted batch)"
+            print(msg + " from WAL")
+
+    def _apply_wal_entry(self, entry) -> None:
+        if entry.operation == "SET":
+            self._memtable.set(entry.key, entry.value or "")
+        elif entry.operation == "DELETE":
+            self._memtable.delete(entry.key)
 
     def _new_sst_path(self, level: int) -> str:
         seq = self._sst_sequence

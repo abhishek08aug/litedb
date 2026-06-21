@@ -57,3 +57,37 @@ class StorageEngine(ABC):
     def find_by_value_range(self, low_value: str, high_value: str) -> list[str]:
         """Primary keys whose stored value is in [low_value, high_value], via the index."""
         raise NotImplementedError(f"Engine {self.name()!r} has no secondary index")
+
+    # ---- optional atomic multi-key write ---------------------------------
+
+    def supports_atomic_batch(self) -> bool:
+        """Whether write_batch is applied atomically (all-or-nothing across crashes)."""
+        return False
+
+    def write_batch(self, ops: "list[WriteOp]") -> None:
+        """Apply a set of writes. Atomic-capable engines commit the whole batch via one WAL
+        record (all-or-nothing on recovery); the default applies them sequentially."""
+        for op in ops:
+            if op.is_delete:
+                self.delete(op.key)
+            else:
+                self.set(op.key, op.value)
+
+
+class WriteOp:
+    """One put or delete within an atomic write batch (see StorageEngine.write_batch)."""
+
+    __slots__ = ("key", "value", "is_delete")
+
+    def __init__(self, key: str, value, is_delete: bool):
+        self.key = key
+        self.value = value
+        self.is_delete = is_delete
+
+    @staticmethod
+    def put(key: str, value: str) -> "WriteOp":
+        return WriteOp(key, value, False)
+
+    @staticmethod
+    def delete(key: str) -> "WriteOp":
+        return WriteOp(key, None, True)
