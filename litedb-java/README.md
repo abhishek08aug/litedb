@@ -29,9 +29,9 @@ All 13 modules are **fully implemented and tested**.
 | TCP Client | `com.litedb.client` | `LiteDBClient` | ✅ complete |
 | Pluggable Storage Engine | `com.litedb.engine` | `StorageEngine`, `BTreeEngine` | ✅ complete |
 | Secondary Index | `com.litedb.index` | `SecondaryIndex` | ✅ complete |
-| Relational layer (SQL) | `com.litedb.relational` | `Catalog`, `TableSchema`, `IndexDef`, `TypeCodec`, `RelationalEngine` | ✅ DDL + DML + multiple indexes + query planner + typed encoding + atomic multi-key writes |
+| Relational layer (SQL) | `com.litedb.relational` | `Catalog`, `TableSchema`, `IndexDef`, `TypeCodec`, `RelationalEngine` | ✅ DDL + DML + multiple indexes + query planner + typed encoding + **runs on MVCC transactions** |
 | Atomic write batch | `com.litedb.engine` | `WriteOp`, `LSMEngine#writeBatch` | ✅ WAL BEGIN/COMMIT — all-or-nothing on recovery |
-| MVCC transactions | `com.litedb.mvcc` | `MVCCEngine`, `Transaction`, `TimestampOracle` | 🟡 transactional KV — snapshot isolation, OCC conflict detection, tombstones, GC (SQL-layer wiring next) |
+| MVCC transactions | `com.litedb.mvcc` | `MVCCEngine`, `Transaction`, `TimestampOracle` | ✅ snapshot isolation + OCC conflict detection + tombstones + GC — **wired into the SQL layer** (`BEGIN`/`COMMIT`/`ROLLBACK`) |
 | Async Replication | `com.litedb.replication` | `ReplicationLog` | ✅ complete |
 | Consistent Hashing | `com.litedb.sharding` | `ConsistentHashRing` | ✅ complete |
 | Raft Consensus | `com.litedb.raft` | `RaftNode` | ✅ complete |

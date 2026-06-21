@@ -26,6 +26,7 @@ public final class Transaction {
 
     public long readTs() { return readTs; }
     public long commitTs() { return commitTs; }
+    public boolean hasWrites() { return !writes.isEmpty(); }
 
     /** Point read at the transaction's snapshot (own pending writes win). Null if absent/deleted. */
     public String get(String key) throws IOException {
@@ -35,6 +36,21 @@ public final class Transaction {
             return MVCCEngine.TOMBSTONE.equals(v) ? null : v;
         }
         return mvcc.read(key, readTs);
+    }
+
+    /** Snapshot range scan over [loKey, hiKey] (inclusive), with this txn's pending writes applied. */
+    public java.util.List<java.util.Map.Entry<String, String>> scan(String loKey, String hiKey) throws IOException {
+        java.util.TreeMap<String, String> merged = new java.util.TreeMap<>();
+        for (java.util.Map.Entry<String, String> e : mvcc.scan(loKey, hiKey, readTs)) {
+            merged.put(e.getKey(), e.getValue());
+        }
+        for (java.util.Map.Entry<String, String> e : writes.entrySet()) {     // overlay own writes
+            String k = e.getKey();
+            if (k.compareTo(loKey) < 0 || k.compareTo(hiKey) > 0) continue;
+            if (MVCCEngine.TOMBSTONE.equals(e.getValue())) merged.remove(k);
+            else merged.put(k, e.getValue());
+        }
+        return new java.util.ArrayList<>(merged.entrySet());
     }
 
     public void put(String key, String value) {
