@@ -165,6 +165,31 @@ FINDVAL <lowValue> <highValue>   # primary keys whose value is in [low, high], s
 
 ---
 
+## Relational SQL + MVCC transactions
+
+On top of the storage engine sits a small relational database that mirrors the Java implementation:
+
+- **Schema + DDL** — `CREATE TABLE` / `DROP TABLE` (catalog persisted in the store), `CREATE INDEX` / `DROP INDEX`
+- **DML** — `INSERT` / `SELECT` / `DELETE` with projection, `WHERE` (incl. `AND`/`OR`/`NOT`), `ORDER BY`, `LIMIT`
+- **Multiple secondary indexes** + a **query planner** that uses an index range-scan when the `WHERE` column is indexed, else a full scan (`-- plan:` line shows which)
+- **Typed, order-preserving encoding** (`type_codec.py`) so numeric ranges sort correctly (`10 > 9`, negatives)
+- **MVCC transactions** (`mvcc.py`) — every statement runs in a transaction: snapshot reads, atomic commit with write-write conflict detection; auto-commit or explicit `BEGIN` / `COMMIT` / `ROLLBACK`; catalog, rows, and index entries are all MVCC-versioned
+
+```bash
+python relational_engine.py   # SQL through MVCC + cross-session snapshot isolation
+python mvcc_demo.py            # snapshot isolation, conflict detection, tombstones, GC
+python atomicity_demo.py       # all-or-nothing write batches
+```
+
+| Module | Role |
+|--------|------|
+| `relational_engine.py` | SQL layer (DDL/DML, planner) over MVCC |
+| `catalog.py`, `table_schema.py`, `column.py`, `index_def.py`, `row_codec.py` | schema/catalog + row encoding |
+| `type_codec.py` | order-preserving typed-value encoding |
+| `mvcc.py` | MVCC engine + transactions (snapshot isolation, OCC, GC) |
+
+---
+
 ## Concepts Demonstrated
 
 ### Storage
