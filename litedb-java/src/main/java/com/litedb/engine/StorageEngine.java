@@ -55,4 +55,23 @@ public interface StorageEngine extends Closeable {
         throw new UnsupportedOperationException(
                 "Engine '" + name() + "' has no secondary index");
     }
+
+    // ---- optional atomic multi-key write -----------------------------------
+
+    /** Whether {@link #writeBatch} is applied atomically (all-or-nothing across crashes). */
+    default boolean supportsAtomicBatch() {
+        return false;
+    }
+
+    /**
+     * Apply a set of writes. Atomic-capable engines (see {@link #supportsAtomicBatch}) commit the
+     * whole batch via a single WAL record (all-or-nothing on recovery); the default simply applies
+     * the ops sequentially, which is NOT crash-atomic.
+     */
+    default void writeBatch(List<WriteOp> ops) throws IOException {
+        for (WriteOp op : ops) {
+            if (op.delete) delete(op.key);
+            else set(op.key, op.value);
+        }
+    }
 }

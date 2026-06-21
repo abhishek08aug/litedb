@@ -80,6 +80,14 @@ public class WriteAheadLog implements Closeable {
         return append("DELETE", key, null);
     }
 
+    /**
+     * Append a marker record (e.g. "BEGIN" / "COMMIT") used to frame an atomic write batch.
+     * Recovery applies a batch only if its COMMIT marker is present.
+     */
+    public WALEntry appendMarker(String marker) throws IOException {
+        return append(marker, "", null);
+    }
+
     private WALEntry append(String operation, String key, String value) throws IOException {
         lock.lock();
         try {

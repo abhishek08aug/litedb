@@ -1,6 +1,7 @@
 package com.litedb.relational;
 
 import com.litedb.engine.StorageEngine;
+import com.litedb.engine.WriteOp;
 import com.litedb.lsm.LSMEngine;
 import com.litedb.sql.SQLParser;
 import com.litedb.sql.SQLParser.ColumnDef;
@@ -156,8 +157,11 @@ public final class RelationalEngine {
         String pk = row.get(0);
         if (engine.get(rowKey(s.table, pk)) != null) return "ERROR: duplicate primary key: " + pk;
 
-        engine.set(rowKey(s.table, pk), RowCodec.encode(row));
-        addIndexEntries(schema, pk, row);
+        // row + all index entries committed atomically (all-or-nothing)
+        List<WriteOp> ops = new ArrayList<>();
+        ops.add(WriteOp.put(rowKey(s.table, pk), RowCodec.encode(row)));
+        ops.addAll(indexPutOps(schema, pk, row));
+        engine.writeBatch(ops);
         return "OK: 1 row inserted";
     }
 
@@ -215,30 +219,37 @@ public final class RelationalEngine {
                 victims.add(Map.entry(e.getKey(), row));
             }
         }
+        // delete every matched row + all its index entries in one atomic batch
+        List<WriteOp> ops = new ArrayList<>();
         for (Map.Entry<String, List<String>> v : victims) {
-            engine.delete(v.getKey());
-            removeIndexEntries(schema, v.getValue().get(0), v.getValue());
+            ops.add(WriteOp.delete(v.getKey()));
+            ops.addAll(indexDeleteOps(schema, v.getValue().get(0), v.getValue()));
         }
+        engine.writeBatch(ops);
         int n = victims.size();
         return "OK: " + n + (n == 1 ? " row deleted" : " rows deleted");
     }
 
     // ---- index maintenance + scan ----------------------------------------
 
-    private void addIndexEntries(TableSchema schema, String pk, List<String> row) throws IOException {
+    private List<WriteOp> indexPutOps(TableSchema schema, String pk, List<String> row) {
+        List<WriteOp> ops = new ArrayList<>();
         for (IndexDef idx : catalog.indexesForTable(schema.name)) {
             String enc = TypeCodec.encode(schema.columnType(idx.column),
                                           row.get(schema.columnIndex(idx.column)));
-            engine.set(indexKey(schema.name, idx.column, enc, pk), pk);
+            ops.add(WriteOp.put(indexKey(schema.name, idx.column, enc, pk), pk));
         }
+        return ops;
     }
 
-    private void removeIndexEntries(TableSchema schema, String pk, List<String> row) throws IOException {
+    private List<WriteOp> indexDeleteOps(TableSchema schema, String pk, List<String> row) {
+        List<WriteOp> ops = new ArrayList<>();
         for (IndexDef idx : catalog.indexesForTable(schema.name)) {
             String enc = TypeCodec.encode(schema.columnType(idx.column),
                                           row.get(schema.columnIndex(idx.column)));
-            engine.delete(indexKey(schema.name, idx.column, enc, pk));
+            ops.add(WriteOp.delete(indexKey(schema.name, idx.column, enc, pk)));
         }
+        return ops;
     }
 
     /** Resolve a WHERE predicate via an index range-scan, fetching matching rows by PK. */

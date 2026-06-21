@@ -6,6 +6,7 @@ import com.litedb.sstable.SSTableWriter;
 import com.litedb.wal.WALEntry;
 import com.litedb.wal.WriteAheadLog;
 import com.litedb.engine.StorageEngine;
+import com.litedb.engine.WriteOp;
 import com.litedb.index.SecondaryIndex;
 
 import java.io.*;
@@ -72,6 +73,60 @@ public class LSMEngine implements StorageEngine {
         memtable.delete(key);
         if (old != null) valueIndex.remove(key, old);
         maybeFlush();
+    }
+
+    @Override
+    public boolean supportsAtomicBatch() {
+        return true;
+    }
+
+    /**
+     * Atomically apply a batch of writes. The whole batch is framed in the WAL between BEGIN and
+     * COMMIT markers, then applied to the MemTable and the value index. On recovery a batch is
+     * replayed only if its COMMIT marker is present — a crash mid-batch leaves no partial state.
+     */
+    @Override
+    public void writeBatch(List<WriteOp> ops) throws IOException {
+        flushLock.lock();   // a flush truncates the WAL — keep it out of the batch window
+        try {
+            wal.appendMarker("BEGIN");
+            for (WriteOp op : ops) {
+                if (op.delete) wal.appendDelete(op.key);
+                else           wal.appendSet(op.key, op.value);
+            }
+            wal.appendMarker("COMMIT");
+            for (WriteOp op : ops) {
+                String old = get(op.key);
+                if (op.delete) {
+                    memtable.delete(op.key);
+                    if (old != null) valueIndex.remove(op.key, old);
+                } else {
+                    memtable.set(op.key, op.value);
+                    valueIndex.update(op.key, old, op.value);
+                }
+            }
+        } finally {
+            flushLock.unlock();
+        }
+        maybeFlush();
+    }
+
+    /**
+     * TEST ONLY — simulate a crash mid-batch: log BEGIN + the ops but never COMMIT, and do not
+     * apply them. On the next recovery this batch must be discarded entirely.
+     */
+    public void writeBatchSimulateCrash(List<WriteOp> ops) throws IOException {
+        flushLock.lock();
+        try {
+            wal.appendMarker("BEGIN");
+            for (WriteOp op : ops) {
+                if (op.delete) wal.appendDelete(op.key);
+                else           wal.appendSet(op.key, op.value);
+            }
+            // intentionally no COMMIT and no apply
+        } finally {
+            flushLock.unlock();
+        }
     }
 
     /**
@@ -274,18 +329,39 @@ public class LSMEngine implements StorageEngine {
         }
 
         // Replay WAL
-        int replayed = 0;
+        int replayed = 0, discarded = 0;
+        boolean inBatch = false;
+        List<WALEntry> batch = new ArrayList<>();
         for (WALEntry entry : wal.readAll()) {
-            if ("SET".equals(entry.operation)) {
-                memtable.set(entry.key, entry.value != null ? entry.value : "");
-            } else if ("DELETE".equals(entry.operation)) {
-                memtable.delete(entry.key);
+            switch (entry.operation) {
+                case "BEGIN":
+                    inBatch = true; batch.clear();
+                    break;
+                case "COMMIT":
+                    for (WALEntry b : batch) applyWalEntry(b);
+                    replayed += batch.size(); batch.clear(); inBatch = false;
+                    break;
+                default:
+                    if (inBatch) batch.add(entry);          // buffer until COMMIT
+                    else { applyWalEntry(entry); replayed++; }
             }
-            replayed++;
         }
-        if (replayed > 0) System.out.println("[LSM] Recovered " + replayed + " entries from WAL");
+        if (inBatch) discarded = batch.size();              // crash before COMMIT -> discard
+        if (replayed > 0 || discarded > 0) {
+            System.out.println("[LSM] Recovered " + replayed + " entries"
+                    + (discarded > 0 ? " (discarded " + discarded + " from an uncommitted batch)" : "")
+                    + " from WAL");
+        }
 
         rebuildIndex();
+    }
+
+    private void applyWalEntry(WALEntry e) {
+        if ("SET".equals(e.operation)) {
+            memtable.set(e.key, e.value != null ? e.value : "");
+        } else if ("DELETE".equals(e.operation)) {
+            memtable.delete(e.key);
+        }
     }
 
     /** Rebuild the in-memory secondary index from all live data (called after recovery). */
