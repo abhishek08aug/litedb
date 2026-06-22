@@ -38,9 +38,18 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
 - **RF-agnostic routing** — hit any instance; it forwards to the shard's leader, even across nodes
   that don't host the shard
 - **Cross-shard 2PC** + **HLC** — atomic multi-shard writes with snapshot isolation
+- **2PC failure recovery** — coordinator-crash (durable txn record + a sweep that re-drives
+  in-doubt transactions) *and* participant-crash (PREPARE intents replicated through Raft survive a
+  leader crash; a new leader inherits them); a leader serves conflict-checked writes only after
+  applying its election no-op, so no write can bypass an inherited intent
 - **Live failover** (RF ≥ 3) — kill an instance, its shards re-elect on survivors, data intact
 - **Rich central dashboard** — health, config, consistent-hash ring, shard→node placement matrix,
   one event feed per instance + a merged system stream; kill/restart nodes from the UI
+
+**Run it:** `python dashboard.py` or `java com.litedb.cluster.Dashboard` → http://127.0.0.1:7080
+(Java: 7180). **Tests:** `pytest test_distributed.py`; `python cluster_smoke.py` /
+`recovery_smoke.py` / `participant_recovery_smoke.py`; Java `ClusterSmoke` / `ClusterRecoverySmoke`
+/ `ClusterParticipantRecoverySmoke`. Set `JARVIS_CLUSTER_RF=2` to run replication factor 2.
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 

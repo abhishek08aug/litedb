@@ -216,8 +216,13 @@ End to end, it demonstrates:
   `fsync`'d on a majority before commit; replicas apply identical versioned writes and converge
   byte-for-byte
 - **Routing** — a client can hit *any* instance; it routes the op to the shard's leader (or forwards)
+- **Configurable replication factor** — `JARVIS_CLUSTER_RF=2` puts each shard on 2 of 3 nodes; a
+  node that doesn't host a shard resolves the leader via the shard's replicas and forwards
 - **Distributed transactions** — a write spanning shards runs **two-phase commit** across the
   shard leaders, with **HLC** timestamps (`hlc.py`) for snapshot isolation
+- **2PC failure recovery** — the coordinator persists a txn record and a sweep finishes in-doubt
+  transactions if it crashes; PREPARE intents are replicated through Raft, so a prepared intent
+  survives a participant leader crash (a new leader inherits it — isolation preserved)
 - **Failover** — kill an instance from the UI and watch its shards re-elect leaders on the
   survivors, data intact (persisted Raft logs replay on restart)
 
@@ -232,20 +237,24 @@ distributed logic instead of reading about it.
 | `shard_store.py` / `shard_replica.py` | per-shard MVCC state machine + leader-side commit |
 | `partition.py` | key → shard (consistent hashing) and shard → replica nodes |
 | `hlc.py` | hybrid logical clock for distributed snapshot timestamps |
-| `node.py` | one instance: hosts every shard, routes requests, coordinates 2PC |
+| `node.py` | one instance (a NodeServer): hosts every shard, routes requests, coordinates 2PC, recovers in-doubt txns |
 | `cluster_client.py` | contact-any-node client |
+| `txn_log.py` | coordinator's durable transaction log (2PC recovery) |
 | `events.py` / `dashboard.py` | per-instance event log + launcher + live dashboard |
 
 ```bash
-pytest test_distributed.py     # fast in-process tests (RPC, Raft, replicated MVCC)
-python cluster_smoke.py        # 3 real processes, full scenario, headless
+pytest test_distributed.py          # fast in-process tests (RPC, Raft, replicated MVCC)
+python cluster_smoke.py             # 3 real processes, full scenario (set JARVIS_CLUSTER_RF=2 for RF 2)
+python recovery_smoke.py            # 2PC coordinator-crash recovery
+python participant_recovery_smoke.py # 2PC participant-leader-crash recovery (replicated intents)
 ```
 
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of
-the distributed algorithms — real RPC, real Raft, real partitioning, real 2PC, real failover — but
-it is **not** hardened for the cross-machine failure matrix: no Raft membership changes, snapshot
-install is log-based, 2PC blocks if a coordinator dies mid-commit, and it is not Jepsen-tested. See
-[../ROADMAP.md](../ROADMAP.md) for exactly what remains.
+the distributed algorithms — real RPC, real Raft, real partitioning, real 2PC, real failover, and
+real 2PC failure recovery (coordinator *and* participant) — but it is **not** hardened for the
+cross-machine failure matrix: no Raft membership changes, snapshot install is log-based, no
+parallel-commit, and it is not Jepsen-tested. The same cluster is implemented in Java
+(`com.litedb.cluster`). See [../ROADMAP.md](../ROADMAP.md) for exactly what is built vs. what remains.
 
 ---
 

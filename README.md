@@ -27,13 +27,14 @@ LiteDB is a fully working key-value and SQL database implementing the core algor
 > database. On top of it — **in both Python and Java at parity** — runs an **integrated
 > single-machine distributed cluster**: multiple instances that partition data into shards
 > (consistent hashing), replicate each shard through its own Raft group (multi-raft), route
-> requests to leaders (with a configurable replication factor), and commit cross-shard
-> transactions via 2PC. A live web dashboard shows cluster health, config, the consistent-hash
+> requests to leaders (with a configurable replication factor), commit cross-shard transactions via
+> 2PC, and recover in-doubt 2PC after a coordinator *or* participant crash (prepared intents are
+> replicated through Raft). A live web dashboard shows cluster health, config, the consistent-hash
 > ring, the shard→node placement matrix, and one event feed per instance narrating its reasoning;
 > you can kill/restart nodes and watch failover. Launch it with `python dashboard.py` or
 > `java com.litedb.cluster.Dashboard`. It is a real end-to-end integration on one machine; it is
-> **not** hardened for the cross-machine failure matrix (coordinator-failure recovery, membership
-> changes, snapshot install, Jepsen-grade testing). See [ROADMAP.md](ROADMAP.md) for what remains.
+> **not** hardened for the cross-machine failure matrix (membership changes, snapshot install,
+> parallel-commit, Jepsen-grade testing). See [ROADMAP.md](ROADMAP.md) for what is built vs. remains.
 
 ---
 
