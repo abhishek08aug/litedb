@@ -245,7 +245,7 @@ public final class Dashboard {
         Dashboard d = new Dashboard();
         d.startAll();
         d.serve();
-        System.out.println("\n  litedb cluster up — " + ClusterConfig.nodeIds().size() + " instances, "
+        System.out.println("\n  litedb cluster up — " + ClusterConfig.INITIAL_NODES.size() + " instances, "
                 + ClusterConfig.SHARDS.size() + " shards, RF " + ClusterConfig.replicationFactor());
         System.out.println("  dashboard:  http://127.0.0.1:" + ClusterConfig.DASHBOARD_PORT + "\n");
         Runtime.getRuntime().addShutdownHook(new Thread(d::stopAll));

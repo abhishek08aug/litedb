@@ -464,7 +464,7 @@ def main() -> None:
     globals()["PAGE"] = (PAGE.replace("%NODES%", json.dumps(list(INITIAL_NODES)))
                              .replace("%SHARDS%", json.dumps(SHARDS)))
     httpd = ThreadingHTTPServer(("127.0.0.1", DASHBOARD_PORT), Handler)
-    print(f"\n  litedb cluster up — {len(NODES)} instances, {len(SHARDS)} shards, RF {REPLICATION_FACTOR}")
+    print(f"\n  litedb cluster up — {len(INITIAL_NODES)} instances, {len(SHARDS)} shards, RF {REPLICATION_FACTOR}")
     print(f"  dashboard:  http://127.0.0.1:{DASHBOARD_PORT}\n")
     print("  (Ctrl-C to shut the whole cluster down)\n")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
