@@ -190,6 +190,59 @@ python atomicity_demo.py       # all-or-nothing write batches
 
 ---
 
+## Distributed cluster (multiple instances on one machine)
+
+`dashboard.py` brings up **three database instances** (separate OS processes) that coordinate over
+Raft to form one distributed database — **partitioned, replicated, and transactional** — with a
+live web UI that narrates what each instance is doing.
+
+```bash
+python dashboard.py        # then open http://127.0.0.1:7080
+```
+
+End to end, it demonstrates:
+
+- **Partitioning** — keys spread across 6 shards by consistent hashing (`partition.py`)
+- **Multi-raft** — each shard is its *own* Raft group (`raft_node.py`); an instance is leader of
+  some shards and follower of others, so leadership and write load spread across the cluster
+  (vs. a single cluster-wide Raft leader that would bottleneck every write)
+- **Replication** — each write goes through the shard leader's Raft log and is replicated +
+  `fsync`'d on a majority before commit; replicas apply identical versioned writes and converge
+  byte-for-byte
+- **Routing** — a client can hit *any* instance; it routes the op to the shard's leader (or forwards)
+- **Distributed transactions** — a write spanning shards runs **two-phase commit** across the
+  shard leaders, with **HLC** timestamps (`hlc.py`) for snapshot isolation
+- **Failover** — kill an instance from the UI and watch its shards re-elect leaders on the
+  survivors, data intact (persisted Raft logs replay on restart)
+
+Each instance has its own dashboard panel streaming its reasoning — election timeouts, accepting a
+leader, routing by consistent hashing, replicating, applying, running 2PC — so you can *watch* the
+distributed logic instead of reading about it.
+
+| Module | Role |
+|--------|------|
+| `rpc.py` | length-framed JSON-over-TCP RPC (Raft, client, 2PC) |
+| `raft_node.py` | one Raft replica of one shard (election, replication, persistent log) |
+| `shard_store.py` / `shard_replica.py` | per-shard MVCC state machine + leader-side commit |
+| `partition.py` | key → shard (consistent hashing) and shard → replica nodes |
+| `hlc.py` | hybrid logical clock for distributed snapshot timestamps |
+| `node.py` | one instance: hosts every shard, routes requests, coordinates 2PC |
+| `cluster_client.py` | contact-any-node client |
+| `events.py` / `dashboard.py` | per-instance event log + launcher + live dashboard |
+
+```bash
+pytest test_distributed.py     # fast in-process tests (RPC, Raft, replicated MVCC)
+python cluster_smoke.py        # 3 real processes, full scenario, headless
+```
+
+**Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of
+the distributed algorithms — real RPC, real Raft, real partitioning, real 2PC, real failover — but
+it is **not** hardened for the cross-machine failure matrix: no Raft membership changes, snapshot
+install is log-based, 2PC blocks if a coordinator dies mid-commit, and it is not Jepsen-tested. See
+[../ROADMAP.md](../ROADMAP.md) for exactly what remains.
+
+---
+
 ## Concepts Demonstrated
 
 ### Storage

@@ -33,3 +33,6 @@ htmlcov/
 *.swo
 .DS_Store
 Thumbs.db
+# distributed cluster runtime data
+litedb-python/_cluster_data/
+_cluster_data/

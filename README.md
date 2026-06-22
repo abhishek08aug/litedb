@@ -24,10 +24,13 @@ LiteDB is a fully working key-value and SQL database implementing the core algor
 | Observability | Prometheus metrics, slow query log, distributed tracing | Prometheus, Jaeger |
 
 > **Scope note.** The transactional engine (storage + SQL + MVCC) is a complete single-node
-> database. The distribution modules (consistent hashing, async replication, Raft) are
-> **correct, standalone implementations of the algorithms** — they are not yet wired *under*
-> the transactional engine, so this is not a distributed database end-to-end. See
-> [ROADMAP.md](ROADMAP.md) for the exact integration + hardening ladder to distributed prod.
+> database. On top of it, `litedb-python/dashboard.py` runs an **integrated single-machine
+> distributed cluster** — multiple instances that partition data into shards, replicate each
+> shard through its own Raft group, route requests to leaders, and commit cross-shard
+> transactions via 2PC, with a live per-instance event dashboard and working failover. It is a
+> real end-to-end integration on one machine; it is **not** hardened for the cross-machine
+> failure matrix (membership changes, snapshot install, Jepsen-grade testing). See
+> [ROADMAP.md](ROADMAP.md) for exactly what is built vs. what remains.
 
 ---
 
