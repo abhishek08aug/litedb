@@ -31,11 +31,13 @@ from cluster_client import ClusterClient
 from cluster_config import (
     DASHBOARD_PORT,
     DATA_ROOT,
+    INITIAL_NODES,
     NODES,
     REPLICATION_FACTOR,
     SHARDS,
     make_partitioner,
 )
+from controller import Controller
 from partition import RING_SIZE
 from rpc import RPCClient
 
@@ -48,11 +50,19 @@ class Launcher:
         self.client = ClusterClient()
         self.rpc = RPCClient(timeout=1.5)
         self.partitioner = make_partitioner()
+        self.controller = Controller(active=list(INITIAL_NODES), on_event=self._ctrl_event)
+        self._ctrl_log: list[str] = []
+
+    def _ctrl_event(self, msg: str) -> None:
+        self._ctrl_log.append(msg)
+        self._ctrl_log = self._ctrl_log[-50:]
 
     def start_all(self) -> None:
         shutil.rmtree(DATA_ROOT, ignore_errors=True)
-        for nid in NODES:
+        for nid in INITIAL_NODES:
             self.start_node(nid)
+        time.sleep(2.5)
+        self.controller.broadcast_placement()
 
     def start_node(self, nid: str) -> None:
         if nid in self.procs and self.procs[nid].poll() is None:
@@ -68,8 +78,28 @@ class Launcher:
             p.kill()
             p.wait()
 
+    def add_node(self) -> None:
+        """Spawn the next pool node and rebalance shards (with their data) onto it."""
+        nxt = next((n for n in NODES if n not in self.controller.active), None)
+        if nxt is None:
+            return
+        self.start_node(nxt)
+        time.sleep(1.5)
+        threading.Thread(target=lambda: self.controller.add_node(nxt), daemon=True).start()
+
+    def remove_node(self) -> None:
+        """Drain the most-recently-added node (re-replicate its shards) and stop it."""
+        if len(self.controller.active) <= len(INITIAL_NODES):
+            return
+        victim = self.controller.active[-1]
+
+        def go():
+            self.controller.remove_node(victim)
+            self.kill_node(victim)
+        threading.Thread(target=go, daemon=True).start()
+
     def stop_all(self) -> None:
-        for nid in self.procs:
+        for nid in list(self.procs):
             self.kill_node(nid)
 
     def node_events(self, nid: str, after: int) -> dict:
@@ -88,17 +118,14 @@ class Launcher:
 
     def overview(self) -> dict:
         part = self.partitioner
-        statuses = self.client.status()
-        live = {}
-        for st in statuses:
-            live[st.get("node")] = st
+        active = list(self.controller.active)
+        live = {st.get("node"): st for st in self.client.status()}
 
         placement = []
-        for p in part.placement():
-            shard = p["shard"]
+        for shard, replicas in self.controller.placement.items():
             hosts = {}
             leader = None
-            for node in p["replicas"]:
+            for node in replicas:
                 role = None
                 for sh in live.get(node, {}).get("shards", []):
                     if sh["group"] == shard:
@@ -106,22 +133,27 @@ class Launcher:
                         if role == "leader":
                             leader = node
                 hosts[node] = role
-            placement.append({"shard": shard, "preferred": p["preferred"],
-                              "replicas": p["replicas"], "leader": leader, "hosts": hosts})
+            placement.append({"shard": shard, "preferred": replicas[0] if replicas else None,
+                              "replicas": replicas, "leader": leader, "hosts": hosts})
+        placement.sort(key=lambda p: p["shard"])
 
-        up = sum(1 for st in statuses if st.get("alive"))
+        up = sum(1 for n in active if live.get(n, {}).get("alive"))
         with_leader = sum(1 for pp in placement if pp["leader"])
         under = [pp["shard"] for pp in placement
-                 if sum(1 for r in pp["hosts"].values() if r) < part.rf]
+                 if sum(1 for r in pp["hosts"].values() if r) < min(part.rf, len(active))]
         return {
             "config": {
-                "nodes": [{"id": n, "host": NODES[n][0], "port": NODES[n][1]} for n in NODES],
+                "active": active,
+                "nodes": [{"id": n, "host": NODES[n][0], "port": NODES[n][1]} for n in active],
                 "shards": part.shard_ids, "rf": part.rf, "ring_size": RING_SIZE,
+                "can_add": any(n not in active for n in NODES),
+                "can_remove": len(active) > len(INITIAL_NODES),
             },
             "live": live,
             "placement": placement,
             "ring": part.ring_arcs(),
-            "health": {"up": up, "total": len(NODES), "with_leader": with_leader,
+            "control_log": self._ctrl_log[-12:],
+            "health": {"up": up, "total": len(active), "with_leader": with_leader,
                        "total_shards": len(part.shard_ids), "under_replicated": under},
         }
 
@@ -178,6 +210,10 @@ class Handler(BaseHTTPRequestHandler):
                 LAUNCHER.kill_node(nid)
             elif action == "start":
                 LAUNCHER.start_node(nid)
+            elif action == "add_node":
+                LAUNCHER.add_node()
+            elif action == "remove_node":
+                LAUNCHER.remove_node()
             self._json({"ok": True})
         else:
             self._json({"error": "not found"}, 404)
@@ -232,7 +268,7 @@ PAGE = r"""<!doctype html>
   .ev .cat{display:inline-block;min-width:74px;font-size:10px;text-transform:uppercase}
   .ev .node{color:var(--dim);font-size:10px}
   .election{color:#d29922}.leader{color:#3fb950}.vote{color:#39c5cf}.replication{color:#58a6ff}
-  .apply{color:#e6edf3}.routing{color:#bc8cff}.txn{color:#f0883e}
+  .apply{color:#e6edf3}.routing{color:#bc8cff}.txn{color:#f0883e}.config{color:#79c0ff}
   .nfoot{padding:6px 12px;border-top:1px solid var(--line)}
   .nfoot button{font-size:11px;padding:3px 8px;width:100%}
   .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px}
@@ -253,6 +289,8 @@ PAGE = r"""<!doctype html>
     <button class="primary" onclick="put()">PUT</button>
     <button onclick="get()">GET</button>
     <button onclick="txn()">Cross-shard txn (2PC)</button>
+    <button id="btn-add" onclick="control('add_node')">+ Add node</button>
+    <button id="btn-rm" onclick="control('remove_node')">− Remove node</button>
   </div>
 </header>
 <div class="wrap">
@@ -264,11 +302,13 @@ PAGE = r"""<!doctype html>
   </div>
   <div class="section-title">Instances — each panel narrates its own reasoning</div>
   <div class="nodes" id="grid"></div>
+  <div class="section-title">Control plane — rebalancing log (add / remove node)</div>
+  <div class="card"><div id="ctrl"></div></div>
   <div class="section-title">System event stream (all instances, newest first)</div>
   <div class="card"><div id="stream"></div></div>
 </div>
 <script>
-const ORDER = %NODES%;
+let ORDER = %NODES%;
 const SHARDS = %SHARDS%;
 const COLORS = ["#58a6ff","#3fb950","#f0883e","#bc8cff","#39c5cf","#d29922","#db61a2","#a5d6ff"];
 const colorOf = s => COLORS[SHARDS.indexOf(s) % COLORS.length];
@@ -281,12 +321,24 @@ function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 async function poll(){
   let ov;
   try { ov = await (await fetch('/api/overview')).json(); } catch(e){ return; }
-  renderHeader(ov); renderConfig(ov); renderRing(ov); renderPlacement(ov);
+  // the active node set is dynamic (add/remove node) — track it
+  const active = ov.config.active;
+  active.forEach(n => { if(!(n in cursors)){ cursors[n]=0; feeds[n]=[]; } });
+  const changed = JSON.stringify(active) !== JSON.stringify(ORDER);
+  ORDER = active;
+  renderHeader(ov); renderConfig(ov); renderRing(ov); renderPlacement(ov); renderCtrl(ov);
   const grid = document.getElementById('grid');
   grid.style.gridTemplateColumns = `repeat(${ORDER.length},1fr)`;
-  if(grid.children.length !== ORDER.length){ grid.innerHTML=''; ORDER.forEach(n=>grid.appendChild(buildNode(n))); }
+  if(changed || grid.children.length !== ORDER.length){ grid.innerHTML=''; ORDER.forEach(n=>grid.appendChild(buildNode(n))); }
   for(const nid of ORDER){ renderHead(nid, ov.live[nid]||{alive:false}); await pullEvents(nid); }
   renderStream();
+  document.getElementById('btn-add').disabled = !ov.config.can_add;
+  document.getElementById('btn-rm').disabled = !ov.config.can_remove;
+}
+function renderCtrl(ov){
+  const box=document.getElementById('ctrl'); box.innerHTML='';
+  (ov.control_log||[]).slice().reverse().forEach(m=> box.appendChild(el('div','ev',`<span class="cat config">control</span> ${esc(m)}`)));
+  if(!(ov.control_log||[]).length) box.innerHTML='<div style="color:var(--dim)">use “+ Add node” / “− Remove node” to rebalance the cluster</div>';
 }
 
 function renderHeader(ov){
@@ -404,7 +456,7 @@ def main() -> None:
     global LAUNCHER
     LAUNCHER = Launcher()
     LAUNCHER.start_all()
-    globals()["PAGE"] = (PAGE.replace("%NODES%", json.dumps(list(NODES)))
+    globals()["PAGE"] = (PAGE.replace("%NODES%", json.dumps(list(INITIAL_NODES)))
                              .replace("%SHARDS%", json.dumps(SHARDS)))
     httpd = ThreadingHTTPServer(("127.0.0.1", DASHBOARD_PORT), Handler)
     print(f"\n  litedb cluster up — {len(NODES)} instances, {len(SHARDS)} shards, RF {REPLICATION_FACTOR}")
