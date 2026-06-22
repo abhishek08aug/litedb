@@ -24,7 +24,8 @@ from shard_store import ShardStore
 class ShardReplica:
     def __init__(self, node_id: str, shard_id: str, peers: list[str],
                  send_fn: SendFn, data_dir: str, hlc: HLC, preferred: bool = False,
-                 on_event: Optional[Callable[[str, str], None]] = None):
+                 on_event: Optional[Callable[[str, str], None]] = None,
+                 voters: Optional[list[str]] = None):
         self.node_id = node_id
         self.shard_id = shard_id
         self.hlc = hlc
@@ -33,11 +34,14 @@ class ShardReplica:
             node_id=node_id, group_id=shard_id, peers=peers, send_fn=send_fn,
             apply_fn=lambda index, command: self.store.apply(command),
             data_dir=os.path.join(data_dir, f"shard-{shard_id}-raft"),
-            preferred=preferred, on_event=on_event,
+            preferred=preferred, on_event=on_event, voters=voters,
         )
         # serialize the check+propose decision section per shard (the durable, cross-operation
         # "lock" on keys is the replicated intent itself, not this in-process lock).
         self._lock = threading.Lock()
+
+    def reconfigure(self, voters: list[str]) -> Optional[int]:
+        return self.raft.reconfigure(voters)
 
     def start(self) -> None:
         self.raft.start()

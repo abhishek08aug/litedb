@@ -70,8 +70,8 @@ class ShardStore:
           2PC abort:                  {"op":"abort", "txn_id"}
         writes = [[user_key, value_or_None], ...]; None encodes a delete (tombstone)."""
         op = command.get("op")
-        if op == "noop":
-            return  # leader-election no-op: only there to advance the commit point
+        if op in ("noop", "config"):
+            return  # control entries (election no-op, membership change): not data
         if op == "prepare":
             txn_id, commit_ts, writes = command["txn_id"], command["commit_ts"], command["writes"]
             self.engine.set(self._intent_key(txn_id),

@@ -22,7 +22,13 @@ import time
 from typing import Optional
 
 import _loader  # noqa: F401  (puts this dir on sys.path)
-from cluster_config import NODES, make_partitioner, node_data_dir
+from cluster_config import (
+    INITIAL_NODES,
+    NODES,
+    compute_placement,
+    make_partitioner,
+    node_data_dir,
+)
 from events import EventLog
 from hlc import HLC
 from raft_node import RPC_TIMEOUT
@@ -39,22 +45,22 @@ class NodeServer:
     def __init__(self, node_id: str):
         self.node_id = node_id
         self.host, self.port = NODES[node_id]
-        self.partitioner = make_partitioner()
+        self.partitioner = make_partitioner()  # key -> shard (static) + ring viz
         self.hlc = HLC()
         self.events = EventLog()
         self.client = RPCClient(timeout=RPC_TIMEOUT)
-        data_dir = node_data_dir(node_id)
-        self.txnlog = TxnLog(data_dir)
+        self.data_dir = node_data_dir(node_id)
+        self.txnlog = TxnLog(self.data_dir)
+        self._running = False
 
+        # shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
+        # Starts from the initial even placement; a node added later starts empty and is told what
+        # to host + what the placement is.
+        self.placement: dict[str, list[str]] = compute_placement(INITIAL_NODES)
         self.shards: dict[str, ShardReplica] = {}
-        for s in self.partitioner.shards_on(node_id):
-            peers = [n for n in self.partitioner.replicas(s) if n != node_id]
-            self.shards[s] = ShardReplica(
-                node_id=node_id, shard_id=s, peers=peers, send_fn=self._make_send(s),
-                data_dir=data_dir, hlc=self.hlc,
-                preferred=(self.partitioner.preferred_leader(s) == node_id),
-                on_event=self.events.emit,
-            )
+        for s, nodes in self.placement.items():
+            if node_id in nodes:
+                self._create_replica(s, nodes)
 
         self.handlers = {
             # raft transport
@@ -77,8 +83,54 @@ class NodeServer:
                                        p.get("coordinator"))),
             "shard_commit": lambda p: self._with_shard(p, lambda r: r.commit_prepared(p["txn_id"])),
             "shard_abort": lambda p: self._with_shard(p, lambda r: r.abort_prepared(p["txn_id"])),
+            # cluster membership / rebalancing (driven by the controller)
+            "host_shard": self._on_host_shard,
+            "drop_shard": self._on_drop_shard,
+            "reconfigure": self._on_reconfigure,
+            "update_placement": self._on_update_placement,
         }
         self.server = RPCServer(self.host, self.port, self.handlers)
+
+    def _create_replica(self, shard: str, voters: list[str]) -> None:
+        """Create (and, if already running, start) a replica of `shard` with the given Raft
+        configuration. A node being added passes the current config NOT including itself, so it
+        joins as a non-voting follower and becomes a voter when the add-config entry replicates."""
+        if shard in self.shards:
+            return
+        peers = [n for n in voters if n != self.node_id]
+        rep = ShardReplica(
+            node_id=self.node_id, shard_id=shard, peers=peers, send_fn=self._make_send(shard),
+            data_dir=self.data_dir, hlc=self.hlc,
+            preferred=(bool(voters) and voters[0] == self.node_id),
+            on_event=self.events.emit, voters=voters,
+        )
+        self.shards[shard] = rep
+        if self._running:
+            rep.start()
+
+    def _on_host_shard(self, p: dict) -> dict:
+        self._create_replica(p["shard"], p["voters"])
+        self.events.emit("config", f"asked to host {p['shard']} (config {sorted(p['voters'])}) — "
+                                    f"created a follower replica; will catch up via Raft")
+        return {"ok": True}
+
+    def _on_drop_shard(self, p: dict) -> dict:
+        rep = self.shards.pop(p["shard"], None)
+        if rep is not None:
+            rep.stop()
+            self.events.emit("config", f"dropped my replica of {p['shard']} (no longer assigned here)")
+        return {"ok": True}
+
+    def _on_reconfigure(self, p: dict) -> dict:
+        rep = self.shards.get(p["shard"])
+        if rep is None:
+            return {"ok": False, "error": "not_hosted"}
+        idx = rep.reconfigure(p["voters"])
+        return {"ok": idx is not None, "index": idx}
+
+    def _on_update_placement(self, p: dict) -> dict:
+        self.placement = {s: list(ns) for s, ns in p["placement"].items()}
+        return {"ok": True}
 
     def _make_send(self, shard_id: str):
         def send(peer_node: str, kind: str, payload: dict) -> dict:
@@ -89,6 +141,7 @@ class NodeServer:
         return send
 
     def start(self) -> None:
+        self._running = True
         self.server.start()
         for rep in self.shards.values():
             rep.start()
@@ -180,7 +233,7 @@ class NodeServer:
                 if lid:
                     return lid
             else:
-                for rep_node in self.partitioner.replicas(shard):
+                for rep_node in self.placement.get(shard, []):
                     if rep_node == self.node_id:
                         continue
                     res = self._call(rep_node, "shard_leader", {"shard": shard})
@@ -339,7 +392,8 @@ class NodeServer:
         for s in sorted(self.shards):
             rep = self.shards[s]
             st = rep.status()
-            st["preferred"] = (self.partitioner.preferred_leader(s) == self.node_id)
+            placed = self.placement.get(s, [])
+            st["preferred"] = (bool(placed) and placed[0] == self.node_id)
             shard_status.append(st)
         return {"ok": True, "node": self.node_id, "alive": True, "shards": shard_status}
 

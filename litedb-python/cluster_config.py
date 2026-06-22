@@ -10,11 +10,11 @@ import os
 
 from partition import Partitioner
 
-NODES: dict[str, list] = {
-    "node-1": ["127.0.0.1", 7001],
-    "node-2": ["127.0.0.1", 7002],
-    "node-3": ["127.0.0.1", 7003],
-}
+# Address book: the POOL of possible nodes (so any node can reach any other). The cluster starts
+# with INITIAL_NODES active; more can be added at runtime (up to this pool), or active ones removed.
+NODES: dict[str, list] = {f"node-{i}": ["127.0.0.1", 7000 + i] for i in range(1, 7)}
+
+INITIAL_NODES: list[str] = ["node-1", "node-2", "node-3"]
 
 SHARDS: list[str] = [f"shard-{i}" for i in range(6)]
 
@@ -28,8 +28,19 @@ DATA_ROOT = os.environ.get("JARVIS_CLUSTER_DATA",
                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cluster_data"))
 
 
-def make_partitioner() -> Partitioner:
-    return Partitioner(SHARDS, list(NODES.keys()), replication_factor=REPLICATION_FACTOR)
+def make_partitioner(nodes: list[str] | None = None) -> Partitioner:
+    return Partitioner(SHARDS, nodes or INITIAL_NODES, replication_factor=REPLICATION_FACTOR)
+
+
+def compute_placement(nodes: list[str], rf: int | None = None) -> dict[str, list[str]]:
+    """Even round-robin assignment of each shard to `rf` of the active `nodes` — the balancer's
+    target. Recomputing it when the node set changes yields the shards that must move."""
+    rf = rf or REPLICATION_FACTOR
+    rf = min(rf, len(nodes))
+    # round-robin order (NOT sorted): replicas[0] rotates per shard, so preferred leadership — and
+    # thus write load — spreads across nodes instead of piling on the alphabetically-first one.
+    return {SHARDS[i]: [nodes[(i + j) % len(nodes)] for j in range(rf)]
+            for i in range(len(SHARDS))}
 
 
 def node_data_dir(node_id: str) -> str:

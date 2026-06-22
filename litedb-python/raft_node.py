@@ -49,10 +49,18 @@ class RaftGroup:
     def __init__(self, node_id: str, group_id: str, peers: list[str],
                  send_fn: SendFn, apply_fn: ApplyFn, data_dir: str,
                  preferred: bool = False,
-                 on_event: Optional[Callable[[str, str], None]] = None):
+                 on_event: Optional[Callable[[str, str], None]] = None,
+                 voters: Optional[list[str]] = None):
         self.node_id = node_id
         self.group_id = group_id
-        self.peers = list(peers)  # other node_ids replicating this group
+        # The membership is a CONFIGURATION (set of voting members, including self). It lives in the
+        # Raft log as {"op":"config","voters":[...]} entries; the latest one in the log wins (Raft's
+        # rule), so config changes replicate like any other entry. A joining node passes `voters` =
+        # the current config WITHOUT itself (it's a non-voting follower until the config entry that
+        # adds it is replicated to it). Default: all replicas are voters (peers + self).
+        self._initial_voters: set[str] = set(voters) if voters is not None else set(peers) | {node_id}
+        self.voters: set[str] = set(self._initial_voters)
+        self.peers: list[str] = sorted(self.voters - {node_id})  # replication / vote targets
         self._send = send_fn
         self._apply = apply_fn
         self._emit = on_event or (lambda cat, msg: None)
@@ -108,6 +116,7 @@ class RaftGroup:
                     line = line.strip()
                     if line:
                         self.log.append(json.loads(line))
+        self._refresh_voters_from_log()
 
     def _persist_meta(self) -> None:
         tmp = self._meta_path + ".tmp"
@@ -194,8 +203,8 @@ class RaftGroup:
         while self._running:
             time.sleep(0.02)
             with self._lock:
-                if self.role == Role.LEADER:
-                    continue
+                if self.role == Role.LEADER or self.node_id not in self.voters:
+                    continue  # non-voters (e.g. a node being removed / still catching up) don't elect
                 if time.monotonic() - self._last_heartbeat >= self._election_timeout:
                     self._start_election()
 
@@ -232,11 +241,36 @@ class RaftGroup:
                 return
             if r["vote_granted"]:
                 self.votes_received.add(r["voter_id"])
-                if len(self.votes_received) >= self._majority():
+                if len(self.votes_received & self.voters) >= self._majority():
                     self._become_leader()
 
     def _majority(self) -> int:
-        return (len(self.peers) + 1) // 2 + 1
+        return len(self.voters) // 2 + 1
+
+    def _refresh_voters_from_log(self) -> None:
+        """The current configuration is the voters of the LATEST config entry in the log (or the
+        initial config if none). Recomputed after any log change."""
+        voters = self._initial_voters
+        for entry in reversed(self.log):
+            cmd = entry.get("command")
+            if isinstance(cmd, dict) and cmd.get("op") == "config":
+                voters = set(cmd["voters"])
+                break
+        self._set_voters(voters)
+
+    def _set_voters(self, voters: set[str]) -> None:
+        if voters == self.voters:
+            return
+        self.voters = set(voters)
+        self.peers = sorted(self.voters - {self.node_id})
+        nxt = len(self.log) + 1
+        for p in self.peers:                      # initialize leader state for any new peer
+            self.next_index.setdefault(p, nxt)
+            self.match_index.setdefault(p, 0)
+        self._emit("config", f"{self.group_id}: configuration is now {sorted(self.voters)}")
+        # NB: a leader removed from the config must keep leading until that config entry COMMITS
+        # (so the new config is durable) and only THEN step down — handled in _apply_committed,
+        # not here (this runs at append time, before commit).
 
     def handle_vote(self, req: dict) -> dict:
         with self._lock:
@@ -308,13 +342,17 @@ class RaftGroup:
                 self.next_index[peer] = r["match_index"] + 1
                 self._advance_commit()
             else:
-                self.next_index[peer] = max(1, self.next_index.get(peer, 1) - 1)
+                # jump to the follower's reported log end instead of decrementing by one, so a
+                # far-behind (or brand-new) replica catches up in O(1) round-trips, not O(N)
+                self.next_index[peer] = max(1, r["match_index"] + 1)
 
     def _advance_commit(self) -> None:
         for idx in range(len(self.log), self.commit_index, -1):
             if self.log[idx - 1]["term"] != self.current_term:
                 continue
-            count = 1 + sum(1 for p in self.peers if self.match_index.get(p, 0) >= idx)
+            # count voters (incl. self if a voter) that have this index; learners don't count
+            count = (1 if self.node_id in self.voters else 0)
+            count += sum(1 for p in self.peers if p in self.voters and self.match_index.get(p, 0) >= idx)
             if count >= self._majority():
                 self.commit_index = idx
                 self._apply_committed()
@@ -364,6 +402,7 @@ class RaftGroup:
             if rewrote:
                 self._rewrite_log()
             if req["entries"]:
+                self._refresh_voters_from_log()  # a replicated config entry changes membership
                 first = req["entries"][0]["index"]
                 last = req["entries"][-1]["index"]
                 self._emit("replication", f"{self.group_id}: received {len(req['entries'])} "
@@ -391,6 +430,12 @@ class RaftGroup:
             self._emit("apply", f"{self.group_id}: entry idx {entry['index']} reached a majority → "
                                 f"COMMITTED; applied to the storage engine "
                                 f"({self._summarize(entry['command'])})")
+        # A leader that has been removed from the (now-committed) configuration steps down.
+        if self.role == Role.LEADER and self.node_id not in self.voters:
+            self._emit("config", f"{self.group_id}: I was removed from the config and it committed "
+                                 f"→ stepping down as leader")
+            self.role = Role.FOLLOWER
+            self.leader_id = None
         self._commit_cv.notify_all()
 
     @staticmethod
@@ -412,6 +457,23 @@ class RaftGroup:
             entry = {"term": self.current_term, "index": index, "command": command}
             self.log.append(entry)
             self._append_log_persist(entry)
+            return index
+
+    def reconfigure(self, new_voters: list[str]) -> Optional[int]:
+        """Leader-only single-server membership change. Appends a config entry; the new configuration
+        takes effect immediately (latest-config-in-log rule) and replicates like any entry. Caller
+        must change the voter set by ONE member at a time, so old and new majorities always overlap
+        (Raft's safety condition). Returns the entry index, or None if not leader."""
+        with self._lock:
+            if self.role != Role.LEADER:
+                return None
+            cur, new = self.voters, set(new_voters)
+            if len(cur.symmetric_difference(new)) != 1:
+                self._emit("config", f"{self.group_id}: REFUSED config change {sorted(cur)} → "
+                                     f"{sorted(new)} (must change exactly one voter at a time)")
+                return None
+            index = self.propose({"op": "config", "voters": sorted(new)})
+            self._refresh_voters_from_log()  # config is effective as soon as it's in our log
             return index
 
     def wait_commit(self, index: int, timeout: float = 3.0) -> bool:
@@ -449,4 +511,5 @@ class RaftGroup:
                 "log_len": len(self.log),
                 "commit_index": self.commit_index,
                 "last_applied": self.last_applied,
+                "voters": sorted(self.voters),
             }
