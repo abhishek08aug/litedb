@@ -61,7 +61,8 @@ public class ClusterSmoke {
             ClusterClient client = new ClusterClient();
             System.out.println("Replication factor = " + rf + " (each shard on " + rf + " of "
                     + part.nodes().size() + " nodes)");
-            waitUntil(() -> leadersMap(client).size() == 6, 20000, "6 leaders");
+            int nShards = ClusterConfig.SHARDS.size();
+            waitUntil(() -> leadersMap(client).size() == nShards, 25000, nShards + " leaders");
             Map<String, String> lm = leadersMap(client);
             Map<String, Integer> spread = new TreeMap<>();
             for (String n : lm.values()) spread.merge(n, 1, Integer::sum);
@@ -107,7 +108,7 @@ public class ClusterSmoke {
                 System.out.println("Killing " + victim + " (led " + best + " shards)...");
                 procs.get(victim).destroyForcibly().waitFor();
                 final String dead = victim;
-                waitUntil(() -> { Map<String, String> m = leadersMap(client); return m.size() == 6 && !m.containsValue(dead); }, 20000, "failover");
+                waitUntil(() -> { Map<String, String> m = leadersMap(client); return m.size() == nShards && !m.containsValue(dead); }, 25000, "failover");
                 System.out.println("  re-elected onto survivors");
                 if (!Boolean.TRUE.equals(client.put("after-failover", "ok").get("ok"))) throw new AssertionError("post-failover write");
                 if (!"alice=CHANGED".equals(client.get(a))) throw new AssertionError("data lost");

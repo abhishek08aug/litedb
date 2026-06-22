@@ -10,13 +10,19 @@ import os
 
 from partition import Partitioner
 
+# Topology is env-configurable: JARVIS_CLUSTER_NODES (initial nodes), JARVIS_CLUSTER_SHARDS, and
+# JARVIS_CLUSTER_RF. Defaults: 3 nodes, 6 shards, RF 3.
+_INITIAL_NODE_COUNT = int(os.environ.get("JARVIS_CLUSTER_NODES", "3"))
+_SHARD_COUNT = int(os.environ.get("JARVIS_CLUSTER_SHARDS", "6"))
+_POOL_SIZE = max(_INITIAL_NODE_COUNT + 3, 6)  # spare nodes (in the address book) to add at runtime
+
 # Address book: the POOL of possible nodes (so any node can reach any other). The cluster starts
 # with INITIAL_NODES active; more can be added at runtime (up to this pool), or active ones removed.
-NODES: dict[str, list] = {f"node-{i}": ["127.0.0.1", 7000 + i] for i in range(1, 7)}
+NODES: dict[str, list] = {f"node-{i}": ["127.0.0.1", 7000 + i] for i in range(1, _POOL_SIZE + 1)}
 
-INITIAL_NODES: list[str] = ["node-1", "node-2", "node-3"]
+INITIAL_NODES: list[str] = [f"node-{i}" for i in range(1, _INITIAL_NODE_COUNT + 1)]
 
-SHARDS: list[str] = [f"shard-{i}" for i in range(6)]
+SHARDS: list[str] = [f"shard-{i}" for i in range(_SHARD_COUNT)]
 
 DASHBOARD_PORT = 7080
 

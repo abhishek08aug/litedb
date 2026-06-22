@@ -5,7 +5,7 @@ import sys
 import time
 
 from cluster_client import ClusterClient
-from cluster_config import DATA_ROOT, NODES, make_partitioner
+from cluster_config import DATA_ROOT, INITIAL_NODES, SHARDS, make_partitioner
 
 
 def wait_until(fn, timeout=10.0, what=""):
@@ -32,7 +32,7 @@ def leaders_map(client):
 def main():
     shutil.rmtree(DATA_ROOT, ignore_errors=True)
     procs = {}
-    for nid in NODES:
+    for nid in INITIAL_NODES:
         procs[nid] = subprocess.Popen([sys.executable, "node.py", nid],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -42,8 +42,9 @@ def main():
         from cluster_config import REPLICATION_FACTOR
         print(f"Replication factor = {REPLICATION_FACTOR} (each shard lives on {REPLICATION_FACTOR} "
               f"of {len(part.nodes)} nodes)")
-        print("Waiting for all 6 shards to elect leaders...")
-        wait_until(lambda: len(leaders_map(client)) == 6, timeout=15, what="6 leaders")
+        print(f"Waiting for all {len(SHARDS)} shards to elect leaders...")
+        n_shards = len(SHARDS)
+        wait_until(lambda: len(leaders_map(client)) == n_shards, timeout=20, what=f"{n_shards} leaders")
         lm = leaders_map(client)
         from collections import Counter
         spread = Counter(lm.values())
@@ -103,7 +104,7 @@ def main():
             print(f"  killing {victim} (was leading {spread[victim]} shards)")
             procs[victim].kill()
             procs[victim].wait()
-            wait_until(lambda: len(leaders_map(client)) == 6, timeout=15,
+            wait_until(lambda: len(leaders_map(client)) == n_shards, timeout=20,
                        what="re-election of victim's shards onto survivors")
             lm2 = leaders_map(client)
             assert victim not in set(lm2.values()), "dead node still shown as leader"

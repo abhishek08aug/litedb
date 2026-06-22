@@ -12,18 +12,31 @@ import java.util.Map;
  */
 public final class ClusterConfig {
 
+    // Topology is env-configurable: JARVIS_CLUSTER_NODES (initial nodes), JARVIS_CLUSTER_SHARDS,
+    // JARVIS_CLUSTER_RF. Defaults: 3 nodes, 6 shards, RF 3.
+    private static int envInt(String k, int def) {
+        String v = System.getenv(k);
+        return v != null ? Integer.parseInt(v) : def;
+    }
+    private static final int INITIAL_NODE_COUNT = envInt("JARVIS_CLUSTER_NODES", 3);
+    private static final int SHARD_COUNT = envInt("JARVIS_CLUSTER_SHARDS", 6);
+    private static final int POOL_SIZE = Math.max(INITIAL_NODE_COUNT + 3, 6);
+
     // Address book: POOL of possible nodes (so any can reach any). Cluster starts with INITIAL_NODES;
     // more can be added at runtime (up to the pool) or active ones removed.
     public static final Map<String, int[]> NODES = new LinkedHashMap<>();
     static {
-        for (int i = 1; i <= 6; i++) NODES.put("node-" + i, new int[]{7100 + i});
+        for (int i = 1; i <= POOL_SIZE; i++) NODES.put("node-" + i, new int[]{7100 + i});
     }
-    public static final List<String> INITIAL_NODES = List.of("node-1", "node-2", "node-3");
+    public static final List<String> INITIAL_NODES = new ArrayList<>();
+    static {
+        for (int i = 1; i <= INITIAL_NODE_COUNT; i++) INITIAL_NODES.add("node-" + i);
+    }
     public static final String HOST = "127.0.0.1";
 
     public static final List<String> SHARDS = new ArrayList<>();
     static {
-        for (int i = 0; i < 6; i++) SHARDS.add("shard-" + i);
+        for (int i = 0; i < SHARD_COUNT; i++) SHARDS.add("shard-" + i);
     }
 
     public static final int DASHBOARD_PORT = 7180;
