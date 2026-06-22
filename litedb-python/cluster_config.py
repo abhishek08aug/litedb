@@ -10,10 +10,10 @@ import os
 
 from partition import Partitioner
 
-# Topology is env-configurable: JARVIS_CLUSTER_NODES (initial nodes), JARVIS_CLUSTER_SHARDS, and
-# JARVIS_CLUSTER_RF. Defaults: 3 nodes, 6 shards, RF 3.
-_INITIAL_NODE_COUNT = int(os.environ.get("JARVIS_CLUSTER_NODES", "3"))
-_SHARD_COUNT = int(os.environ.get("JARVIS_CLUSTER_SHARDS", "6"))
+# Topology is env-configurable: LITEDB_CLUSTER_NODES (initial nodes), LITEDB_CLUSTER_SHARDS, and
+# LITEDB_CLUSTER_RF. Defaults: 3 nodes, 6 shards, RF 3.
+_INITIAL_NODE_COUNT = int(os.environ.get("LITEDB_CLUSTER_NODES", "3"))
+_SHARD_COUNT = int(os.environ.get("LITEDB_CLUSTER_SHARDS", "6"))
 _POOL_SIZE = max(_INITIAL_NODE_COUNT + 3, 6)  # spare nodes (in the address book) to add at runtime
 
 # Address book: the POOL of possible nodes (so any node can reach any other). The cluster starts
@@ -28,9 +28,9 @@ DASHBOARD_PORT = 7080
 
 # Replication factor is configurable so you can run e.g. 3 instances with RF 2 (each shard lives on
 # only 2 of the 3 nodes — routing then has to forward across nodes that don't host a shard).
-REPLICATION_FACTOR = int(os.environ.get("JARVIS_CLUSTER_RF", "3"))
+REPLICATION_FACTOR = int(os.environ.get("LITEDB_CLUSTER_RF", "3"))
 
-DATA_ROOT = os.environ.get("JARVIS_CLUSTER_DATA",
+DATA_ROOT = os.environ.get("LITEDB_CLUSTER_DATA",
                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cluster_data"))
 
 

@@ -8,18 +8,18 @@ import java.util.Map;
 /**
  * ClusterConfig — shared static topology. Every node process and the client read this, so they all
  * compute routing identically (no central router). Three nodes, six shards; replication factor is
- * configurable via JARVIS_CLUSTER_RF so you can run e.g. RF 2 (each shard on only 2 of 3 nodes).
+ * configurable via LITEDB_CLUSTER_RF so you can run e.g. RF 2 (each shard on only 2 of 3 nodes).
  */
 public final class ClusterConfig {
 
-    // Topology is env-configurable: JARVIS_CLUSTER_NODES (initial nodes), JARVIS_CLUSTER_SHARDS,
-    // JARVIS_CLUSTER_RF. Defaults: 3 nodes, 6 shards, RF 3.
+    // Topology is env-configurable: LITEDB_CLUSTER_NODES (initial nodes), LITEDB_CLUSTER_SHARDS,
+    // LITEDB_CLUSTER_RF. Defaults: 3 nodes, 6 shards, RF 3.
     private static int envInt(String k, int def) {
         String v = System.getenv(k);
         return v != null ? Integer.parseInt(v) : def;
     }
-    private static final int INITIAL_NODE_COUNT = envInt("JARVIS_CLUSTER_NODES", 3);
-    private static final int SHARD_COUNT = envInt("JARVIS_CLUSTER_SHARDS", 6);
+    private static final int INITIAL_NODE_COUNT = envInt("LITEDB_CLUSTER_NODES", 3);
+    private static final int SHARD_COUNT = envInt("LITEDB_CLUSTER_SHARDS", 6);
     private static final int POOL_SIZE = Math.max(INITIAL_NODE_COUNT + 3, 6);
 
     // Address book: POOL of possible nodes (so any can reach any). Cluster starts with INITIAL_NODES;
@@ -42,12 +42,12 @@ public final class ClusterConfig {
     public static final int DASHBOARD_PORT = 7180;
 
     public static int replicationFactor() {
-        String rf = System.getenv("JARVIS_CLUSTER_RF");
+        String rf = System.getenv("LITEDB_CLUSTER_RF");
         return rf != null ? Integer.parseInt(rf) : 3;
     }
 
     public static String dataRoot() {
-        String d = System.getenv("JARVIS_CLUSTER_DATA");
+        String d = System.getenv("LITEDB_CLUSTER_DATA");
         return d != null ? d : System.getProperty("java.io.tmpdir") + "/litedb_cluster_java";
     }
 

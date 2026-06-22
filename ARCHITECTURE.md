@@ -254,7 +254,7 @@ python mvcc_demo.py                                 # snapshot isolation, confli
 
 # distributed cluster (web UI)
 python dashboard.py                                 # http://127.0.0.1:7080  (Java: Dashboard, :7180)
-JARVIS_CLUSTER_RF=2 python dashboard.py             # replication factor 2
+LITEDB_CLUSTER_RF=2 python dashboard.py             # replication factor 2
 
 # headless proofs
 pytest test_distributed.py

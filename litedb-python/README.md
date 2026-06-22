@@ -198,7 +198,7 @@ live web UI that narrates what each instance is doing.
 
 ```bash
 python dashboard.py                    # then open http://127.0.0.1:7080
-JARVIS_CLUSTER_RF=2 python dashboard.py # 3 instances, replication factor 2
+LITEDB_CLUSTER_RF=2 python dashboard.py # 3 instances, replication factor 2
 ```
 
 The dashboard shows the whole system centrally: health badge, configuration, the **consistent-hash
@@ -216,7 +216,7 @@ End to end, it demonstrates:
   `fsync`'d on a majority before commit; replicas apply identical versioned writes and converge
   byte-for-byte
 - **Routing** — a client can hit *any* instance; it routes the op to the shard's leader (or forwards)
-- **Configurable replication factor** — `JARVIS_CLUSTER_RF=2` puts each shard on 2 of 3 nodes; a
+- **Configurable replication factor** — `LITEDB_CLUSTER_RF=2` puts each shard on 2 of 3 nodes; a
   node that doesn't host a shard resolves the leader via the shard's replicas and forwards
 - **Distributed transactions** — a write spanning shards runs **two-phase commit** across the
   shard leaders, with **HLC** timestamps (`hlc.py`) for snapshot isolation
@@ -248,7 +248,7 @@ distributed logic instead of reading about it.
 
 ```bash
 pytest test_distributed.py          # fast in-process tests (RPC, Raft, replicated MVCC)
-python cluster_smoke.py             # 3 real processes, full scenario (set JARVIS_CLUSTER_RF=2 for RF 2)
+python cluster_smoke.py             # 3 real processes, full scenario (set LITEDB_CLUSTER_RF=2 for RF 2)
 python recovery_smoke.py            # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py # 2PC participant-leader-crash recovery (replicated intents)
 python rebalance_smoke.py           # add a node (data rebalances on) then remove it (re-replicates)

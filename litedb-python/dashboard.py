@@ -13,7 +13,7 @@ Controls let you write keys, run a cross-shard transaction, and kill / restart a
 failover live.
 
 Run:  python dashboard.py      then open  http://127.0.0.1:7080
-Set JARVIS_CLUSTER_RF=2 to run 3 instances with replication factor 2.
+Set LITEDB_CLUSTER_RF=2 to run 3 instances with replication factor 2.
 """
 
 import json

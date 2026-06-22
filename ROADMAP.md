@@ -33,7 +33,7 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
 - **Raft drives the real engine** — committed entries apply to a per-shard LSM/MVCC store
   deterministically, so replicas converge byte-for-byte
 - **Consistent-hash partitioning** — keys → shards, shards → replica nodes, leadership spread
-- **Configurable replication factor** — `JARVIS_CLUSTER_RF` (e.g. RF 2 on 3 nodes); a node may
+- **Configurable replication factor** — `LITEDB_CLUSTER_RF` (e.g. RF 2 on 3 nodes); a node may
   not host a given shard, so routing resolves the leader via the shard's replica nodes
 - **RF-agnostic routing** — hit any instance; it forwards to the shard's leader, even across nodes
   that don't host the shard
@@ -56,7 +56,7 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
 (Java: 7180). **Tests:** `pytest test_distributed.py`; `python cluster_smoke.py` /
 `recovery_smoke.py` / `participant_recovery_smoke.py` / `rebalance_smoke.py`; Java `ClusterSmoke` /
 `ClusterRecoverySmoke` / `ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke`. Set
-`JARVIS_CLUSTER_RF=2` for replication factor 2.
+`LITEDB_CLUSTER_RF=2` for replication factor 2.
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 
