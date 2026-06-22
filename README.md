@@ -12,6 +12,10 @@ LiteDB is a fully working key-value and SQL database implementing the core algor
 
 ---
 
+**New here?** [ARCHITECTURE.md](ARCHITECTURE.md) is a layer-by-layer walkthrough of how it works
+and *why* each decision was made; [ROADMAP.md](ROADMAP.md) maps what's built vs. the path to a
+production-grade database.
+
 ## What's implemented
 
 | Layer | What | Real-world analogue |
