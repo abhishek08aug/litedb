@@ -55,9 +55,13 @@ named gap for production. Listed so the boundary is explicit, not hidden.
   that doesn't host a shard resolves the leader via the shard's replica nodes and forwards), but
   the placement itself is fixed shared config. Real scale needs a **placement/metadata service**
   (à la TiKV's Placement Driver) that tracks live shard→node assignment as it changes.
-- **2PC blocks on coordinator failure.** If the transaction coordinator dies between PREPARE and
-  COMMIT, participants hold their locks indefinitely. Production needs a persisted transaction
-  record + a recovery protocol (or parallel-commit) to resolve in-doubt transactions.
+- **2PC recovery handles coordinator failure, not participant failure.** The coordinator persists a
+  transaction record (`txn_log.py` / `TxnLog.java`) at the commit point and, on restart, sweeps it
+  to finish in-doubt transactions (`committing` → re-send COMMIT; `preparing` → ABORT) — so a
+  coordinator can die mid-2PC and recover (proven by `recovery_smoke.py` /
+  `ClusterRecoverySmoke`). What remains: a *participant's* prepared writes are held in memory, so a
+  participant crashing while prepared still loses that state; production persists prepared state too
+  (and adds parallel-commit to cut latency).
 - **HLC assumes roughly-synced clocks.** On one machine all processes read the same clock, so
   snapshot ordering is exact. Across machines you need NTP plus **uncertainty bounds** (Spanner's
   commit-wait / TrueTime) to keep snapshot isolation correct under skew.
@@ -99,7 +103,8 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 - [x] Cross-shard atomic commit via 2PC
 - [x] Distributed clock (HLC) for snapshot timestamps across shards
 - [x] Snapshot isolation across shards
-- [ ] Parallel-commit (cut 2PC latency); coordinator-failure recovery (2PC blocks today)
+- [x] Coordinator-failure recovery (durable txn record + restart sweep finishes in-doubt 2PC)
+- [ ] Parallel-commit (cut 2PC latency); participant-side prepared-state persistence
 - [ ] Distributed deadlock detection / finer-grained latching (per-shard lock today)
 
 ### 4. Cluster lifecycle & membership
@@ -143,7 +148,7 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 The single-machine cluster proves the architecture end to end: partitioning, multi-raft
 replication, routing, cross-shard 2PC, and failover all work with real RPC between real processes.
 What remains is not "invent Raft" or "wire it together" — it is the **cross-machine failure matrix
-and operational hardening**: membership changes, snapshot install, coordinator-failure recovery,
+and operational hardening**: membership changes, snapshot install, participant-side 2PC recovery,
 backups, observability, and Jepsen-grade correctness testing. That is the part that genuinely takes
 a team years, and it is deliberately out of scope here. Scoping that boundary precisely — and
 demonstrating everything up to it — is the point of this document.

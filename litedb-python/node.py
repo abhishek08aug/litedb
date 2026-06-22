@@ -17,6 +17,7 @@ Run as a process:  python node.py <node-id>
 """
 
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -27,6 +28,7 @@ from hlc import HLC
 from raft_node import RPC_TIMEOUT
 from rpc import RPCClient, RPCServer
 from shard_replica import ShardReplica
+from txn_log import TxnLog
 
 FORWARD_TIMEOUT = 3.0
 
@@ -40,6 +42,7 @@ class NodeServer:
         self.events = EventLog()
         self.client = RPCClient(timeout=RPC_TIMEOUT)
         data_dir = node_data_dir(node_id)
+        self.txnlog = TxnLog(data_dir)
 
         self.shards: dict[str, ShardReplica] = {}
         for s in self.partitioner.shards_on(node_id):
@@ -86,6 +89,21 @@ class NodeServer:
         self.server.start()
         for rep in self.shards.values():
             rep.start()
+        threading.Thread(target=self._recovery_loop, daemon=True).start()
+
+    def _recovery_loop(self) -> None:
+        """On restart, finish any 2PC this node was coordinating when it died."""
+        time.sleep(2.0)  # let the RPC server + peers come up and elect leaders
+        for rec in self.txnlog.pending():
+            txn_id = rec["txn_id"]
+            commit = rec["status"] == "committing"
+            verb = "COMMIT" if commit else "ABORT"
+            self.events.emit("txn", f"RECOVERY: in-doubt txn {txn_id} was '{rec['status']}' when I "
+                                    f"crashed → resolving as {verb} on restart")
+            for leader, shard in rec["participants"]:
+                self._call(leader, "shard_commit" if commit else "shard_abort",
+                           {"shard": shard, "txn_id": txn_id})
+            self.txnlog.remove(txn_id)
 
     def stop(self) -> None:
         for rep in self.shards.values():
@@ -222,30 +240,42 @@ class NodeServer:
         if read_ts is None:
             read_ts = commit_ts  # blind writes: snapshot = now, so no stale-read conflict
 
-        prepared: list[tuple[str, str]] = []
-        for shard, w in groups.items():
+        # Resolve all participant leaders first, then durably record the txn as undecided.
+        participants = []
+        for shard in groups:
             leader = self._leader_of(shard)
             if not leader:
-                self._abort_all(prepared, txn_id)
                 return {"ok": False, "error": "no_leader", "shard": shard}
+            participants.append([leader, shard])
+        self.txnlog.write(txn_id, {"txn_id": txn_id, "status": "preparing",
+                                   "participants": participants, "commit_ts": commit_ts})
+
+        prepared: list[tuple[str, str]] = []
+        for leader, shard in participants:
             self.events.emit("txn", f"2PC {txn_id}: PREPARE {shard} on leader {leader} "
                                     f"(validate no conflict + stage writes, holding a lock)")
             res = self._call(leader, "shard_prepare", {
-                "shard": shard, "txn_id": txn_id, "writes": w,
+                "shard": shard, "txn_id": txn_id, "writes": groups[shard],
                 "read_ts": read_ts, "commit_ts": commit_ts,
             })
             if not res.get("ok"):
                 self.events.emit("txn", f"2PC {txn_id}: {shard} voted NO ({res.get('error')}) → "
                                         f"ABORTING the whole transaction (atomicity)")
                 self._abort_all(prepared, txn_id)
+                self.txnlog.remove(txn_id)
                 return {"ok": False, "error": "prepare_failed", "shard": shard, "detail": res}
             prepared.append((leader, shard))
 
-        # All prepared → commit everywhere.
-        self.events.emit("txn", f"2PC {txn_id}: all {len(prepared)} shards voted YES → phase 2: "
-                                f"COMMIT on every participant (each commits via its own Raft group)")
+        # COMMIT POINT: all voted YES → durably record the decision BEFORE committing, so a crash
+        # here is recoverable (the restart sweep will re-send the commits).
+        self.txnlog.write(txn_id, {"txn_id": txn_id, "status": "committing",
+                                   "participants": participants, "commit_ts": commit_ts})
+        self.events.emit("txn", f"2PC {txn_id}: all {len(prepared)} shards voted YES → durably "
+                                f"recorded the COMMIT decision (fsync) → phase 2: COMMIT on every "
+                                f"participant (each via its own Raft group)")
         for leader, shard in prepared:
             self._call(leader, "shard_commit", {"shard": shard, "txn_id": txn_id})
+        self.txnlog.remove(txn_id)
         return {"ok": True, "commit_ts": commit_ts, "txn_id": txn_id, "shards": list(groups.keys())}
 
     def _abort_all(self, prepared: list[tuple[str, str]], txn_id: str) -> None:

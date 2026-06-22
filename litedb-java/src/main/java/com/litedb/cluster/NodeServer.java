@@ -26,12 +26,14 @@ public final class NodeServer {
     final Map<String, ShardReplica> shards = new LinkedHashMap<>();
     private final Map<String, Rpc.Handler> handlers = new LinkedHashMap<>();
     private final Rpc.Server server;
+    private final TxnLog txnlog;
 
     public NodeServer(String nodeId) throws Exception {
         this.nodeId = nodeId;
         this.port = ClusterConfig.port(nodeId);
         this.partitioner = ClusterConfig.makePartitioner();
         String dataDir = ClusterConfig.nodeDataDir(nodeId);
+        this.txnlog = new TxnLog(dataDir);
 
         for (String s : partitioner.shardsOn(nodeId)) {
             List<String> peers = new ArrayList<>();
@@ -69,6 +71,27 @@ public final class NodeServer {
     public void start() throws Exception {
         server.start();
         for (ShardReplica r : shards.values()) r.start();
+        Thread t = new Thread(this::recoverTxns, "txn-recovery");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** On restart, finish any 2PC this node was coordinating when it died. */
+    @SuppressWarnings("unchecked")
+    private void recoverTxns() {
+        sleep(2000);  // let the RPC server + peers come up and elect leaders
+        for (Map<String, Object> rec : txnlog.pending()) {
+            String txnId = (String) rec.get("txn_id");
+            boolean commit = "committing".equals(rec.get("status"));
+            events.emit("txn", "RECOVERY: in-doubt txn " + txnId + " was '" + rec.get("status")
+                    + "' when I crashed → resolving as " + (commit ? "COMMIT" : "ABORT") + " on restart");
+            for (Object po : (List<Object>) rec.get("participants")) {
+                List<Object> ls = (List<Object>) po;
+                call((String) ls.get(0), commit ? "shard_commit" : "shard_abort",
+                        resp("shard", ls.get(1), "txn_id", txnId));
+            }
+            txnlog.remove(txnId);
+        }
     }
 
     public void stop() {
@@ -192,27 +215,44 @@ public final class NodeServer {
         String txnId = "txn-" + nodeId + "-" + hlc.now();
         long commitTs = hlc.now();
         long rts = readTs != null ? readTs : commitTs;
-        List<String[]> prepared = new ArrayList<>();
-        for (Map.Entry<String, Map<String, Object>> g : groups.entrySet()) {
-            String shard = g.getKey();
+
+        // Resolve all participant leaders first, then durably record the txn as undecided.
+        List<Object> participants = new ArrayList<>();
+        for (String shard : groups.keySet()) {
             String leader = leaderOf(shard, 15);
-            if (leader == null) { abortAll(prepared, txnId); return resp("ok", false, "error", "no_leader", "shard", shard); }
+            if (leader == null) return resp("ok", false, "error", "no_leader", "shard", shard);
+            participants.add(new ArrayList<>(List.of(leader, shard)));
+        }
+        txnlog.write(txnId, resp("txn_id", txnId, "status", "preparing",
+                "participants", participants, "commit_ts", commitTs));
+
+        List<String[]> prepared = new ArrayList<>();
+        for (Object po : participants) {
+            @SuppressWarnings("unchecked")
+            List<Object> ls = (List<Object>) po;
+            String leader = (String) ls.get(0), shard = (String) ls.get(1);
             events.emit("txn", "2PC " + txnId + ": PREPARE " + shard + " on leader " + leader
                     + " (validate no conflict + stage writes, holding a lock)");
             Map<String, Object> res = call(leader, "shard_prepare", resp(
-                    "shard", shard, "txn_id", txnId, "writes", g.getValue(),
+                    "shard", shard, "txn_id", txnId, "writes", groups.get(shard),
                     "read_ts", rts, "commit_ts", commitTs));
             if (!Boolean.TRUE.equals(res.get("ok"))) {
                 events.emit("txn", "2PC " + txnId + ": " + shard + " voted NO (" + res.get("error")
                         + ") → ABORTING the whole transaction (atomicity)");
                 abortAll(prepared, txnId);
+                txnlog.remove(txnId);
                 return resp("ok", false, "error", "prepare_failed", "shard", shard);
             }
             prepared.add(new String[]{leader, shard});
         }
-        events.emit("txn", "2PC " + txnId + ": all " + prepared.size() + " shards voted YES → phase 2:"
-                + " COMMIT on every participant (each commits via its own Raft group)");
+        // COMMIT POINT: all voted YES → durably record the decision (fsync) before committing, so a
+        // crash here is recoverable (the restart sweep re-sends the commits).
+        txnlog.write(txnId, resp("txn_id", txnId, "status", "committing",
+                "participants", participants, "commit_ts", commitTs));
+        events.emit("txn", "2PC " + txnId + ": all " + prepared.size() + " shards voted YES → durably"
+                + " recorded the COMMIT decision (fsync) → phase 2: COMMIT on every participant");
         for (String[] ls : prepared) call(ls[0], "shard_commit", resp("shard", ls[1], "txn_id", txnId));
+        txnlog.remove(txnId);
         return resp("ok", true, "commit_ts", commitTs, "txn_id", txnId,
                 "shards", new ArrayList<Object>(groups.keySet()));
     }
