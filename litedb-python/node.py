@@ -62,13 +62,15 @@ class NodeServer:
             "begin": self._on_begin,
             "status": self._on_status,
             "events": lambda p: self.events.since(p.get("after", 0)),
-            # internal shard ops (coordinator -> shard leader)
-            "shard_write": lambda p: self.shards[p["shard"]].commit_write(p["writes"], p.get("read_ts")),
+            "shard_leader": self._on_shard_leader,
+            # internal shard ops (coordinator -> shard leader); guarded for shards not hosted here
+            "shard_write": lambda p: self._with_shard(
+                p, lambda r: r.commit_write(p["writes"], p.get("read_ts"))),
             "shard_get": self._on_shard_get,
-            "shard_prepare": lambda p: self.shards[p["shard"]].prepare(
-                p["txn_id"], p["writes"], p["read_ts"], p["commit_ts"]),
-            "shard_commit": lambda p: self.shards[p["shard"]].commit_prepared(p["txn_id"]),
-            "shard_abort": lambda p: self.shards[p["shard"]].abort_prepared(p["txn_id"]),
+            "shard_prepare": lambda p: self._with_shard(
+                p, lambda r: r.prepare(p["txn_id"], p["writes"], p["read_ts"], p["commit_ts"])),
+            "shard_commit": lambda p: self._with_shard(p, lambda r: r.commit_prepared(p["txn_id"])),
+            "shard_abort": lambda p: self._with_shard(p, lambda r: r.abort_prepared(p["txn_id"])),
         }
         self.server = RPCServer(self.host, self.port, self.handlers)
 
@@ -104,11 +106,36 @@ class NodeServer:
             return {"ok": False, "error": resp.get("error", "rpc_failed")}
         return resp["result"]
 
+    def _with_shard(self, p: dict, fn):
+        """Run an op against a locally-hosted shard replica, or report that we don't host it."""
+        shard = p["shard"]
+        rep = self.shards.get(shard)
+        if rep is None:
+            return {"ok": False, "error": "not_hosted", "shard": shard}
+        return fn(rep)
+
+    def _on_shard_leader(self, p: dict) -> dict:
+        shard = p["shard"]
+        rep = self.shards.get(shard)
+        if rep is None:
+            return {"ok": False, "error": "not_hosted"}
+        return {"ok": True, "leader": rep.leader_id()}
+
     def _leader_of(self, shard: str, retries: int = 15) -> Optional[str]:
+        """Resolve a shard's leader whether or not THIS node hosts the shard. If it does, read the
+        local Raft view; otherwise ask the shard's replica nodes (works for any replication factor)."""
         for _ in range(retries):
-            lid = self.shards[shard].leader_id()
-            if lid:
-                return lid
+            if shard in self.shards:
+                lid = self.shards[shard].leader_id()
+                if lid:
+                    return lid
+            else:
+                for rep_node in self.partitioner.replicas(shard):
+                    if rep_node == self.node_id:
+                        continue
+                    res = self._call(rep_node, "shard_leader", {"shard": shard})
+                    if res.get("ok") and res.get("leader"):
+                        return res["leader"]
             time.sleep(0.1)
         return None
 
@@ -123,26 +150,34 @@ class NodeServer:
     def _on_put(self, p: dict) -> dict:
         return self._on_txn({"writes": {p["key"]: p.get("value")}, "read_ts": p.get("read_ts")})
 
+    def _my_relation_to(self, shard: str) -> str:
+        rep = self.shards.get(shard)
+        if rep is None:
+            return "I don't host this shard"
+        return "I'm its leader" if rep.is_leader() else "I'm a follower of this shard"
+
     def _on_get(self, p: dict) -> dict:
         key = p["key"]
         shard = self.partitioner.shard_for(key)
+        relation = self._my_relation_to(shard)
         leader = self._leader_of(shard)
         if not leader:
             return {"ok": False, "error": "no_leader", "shard": shard}
         if leader == self.node_id:
             rep = self.shards[shard]
             self.events.emit("routing", f"GET {key} → consistent hashing maps it to {shard}; "
-                                        f"I'm that shard's leader, so I serve the read locally "
-                                        f"(MVCC snapshot read)")
+                                        f"{relation} → I serve the read locally (MVCC snapshot read)")
             return {"ok": True, "value": rep.read(key, p.get("read_ts")),
                     "shard": shard, "snapshot_ts": rep.snapshot_ts()}
-        self.events.emit("routing", f"GET {key} → consistent hashing maps it to {shard}; its leader "
-                                    f"is {leader}, so I forward the read there (leader read = "
-                                    f"linearizable)")
+        self.events.emit("routing", f"GET {key} → maps to {shard} (consistent hashing); {relation}, "
+                                    f"so I resolved its leader = {leader} and forward the read there "
+                                    f"(leader read = linearizable)")
         return self._call(leader, "shard_get", {"shard": shard, "key": key, "read_ts": p.get("read_ts")})
 
     def _on_shard_get(self, p: dict) -> dict:
-        rep = self.shards[p["shard"]]
+        rep = self.shards.get(p["shard"])
+        if rep is None:
+            return {"ok": False, "error": "not_hosted", "shard": p["shard"]}
         return {"ok": True, "value": rep.read(p["key"], p.get("read_ts")),
                 "shard": p["shard"], "snapshot_ts": rep.snapshot_ts()}
 
@@ -160,12 +195,14 @@ class NodeServer:
             if not leader:
                 return {"ok": False, "error": "no_leader", "shard": shard}
             keys = ", ".join(w.keys())
+            relation = self._my_relation_to(shard)
             if leader == self.node_id:
                 self.events.emit("routing", f"WRITE [{keys}] → all in {shard} (consistent hashing); "
-                                            f"I'm its leader → single-shard commit via Raft")
+                                            f"{relation} → single-shard commit via Raft")
             else:
                 self.events.emit("routing", f"WRITE [{keys}] → all in {shard} (consistent hashing); "
-                                            f"its leader is {leader} → forwarding the write there")
+                                            f"{relation}, so I resolved its leader = {leader} → "
+                                            f"forwarding the write there")
             res = self._call(leader, "shard_write", {"shard": shard, "writes": w, "read_ts": read_ts})
             res.setdefault("shards", [shard])
             return res

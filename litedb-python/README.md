@@ -197,8 +197,14 @@ Raft to form one distributed database — **partitioned, replicated, and transac
 live web UI that narrates what each instance is doing.
 
 ```bash
-python dashboard.py        # then open http://127.0.0.1:7080
+python dashboard.py                    # then open http://127.0.0.1:7080
+JARVIS_CLUSTER_RF=2 python dashboard.py # 3 instances, replication factor 2
 ```
+
+The dashboard shows the whole system centrally: health badge, configuration, the **consistent-hash
+ring** (which shard owns which arc of the keyspace), the **shard → node placement matrix**
+(leader / follower / not-hosted, live), one **event feed per instance**, and a **merged system
+stream**. The same cluster is implemented in Java (`com.litedb.cluster.Dashboard`).
 
 End to end, it demonstrates:
 

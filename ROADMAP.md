@@ -25,18 +25,22 @@ matrix and operational hardening** — the part that genuinely takes years.
   tombstones, vacuum/GC, an in-process timestamp oracle
 - Java and Python implementations at feature parity
 
-### Single-machine distributed cluster (integrated, built — `litedb-python/`)
-- **Real RPC transport** (`rpc.py`) — length-framed JSON over TCP; Raft, client, and 2PC ride it
-- **Multi-process Raft** (`raft_node.py`) — election, log replication, safety, **persistent**
-  term/vote/log with fsync, restart-recovery; one Raft group **per shard** (multi-raft)
+### Single-machine distributed cluster (integrated, built — **Python and Java at parity**)
+Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the full system:
+- **Real RPC transport** — length-framed JSON over TCP; Raft, client, and 2PC ride it
+- **Multi-process Raft** — election, log replication, safety, **persistent** term/vote/log with
+  fsync, restart-recovery; one Raft group **per shard** (multi-raft)
 - **Raft drives the real engine** — committed entries apply to a per-shard LSM/MVCC store
-  (`shard_store.py`), deterministically, so replicas converge byte-for-byte
-- **Consistent-hash partitioning** (`partition.py`) — keys → shards, shards → replica nodes,
-  leadership spread across instances
-- **Routing** (`node.py`, `cluster_client.py`) — hit any instance; it forwards to the shard leader
-- **Cross-shard 2PC** + **HLC** (`hlc.py`) — atomic multi-shard writes with snapshot isolation
-- **Live failover** — kill an instance, its shards re-elect on survivors, data intact
-- **Per-instance event dashboard** (`events.py`, `dashboard.py`) — watch the reasoning live
+  deterministically, so replicas converge byte-for-byte
+- **Consistent-hash partitioning** — keys → shards, shards → replica nodes, leadership spread
+- **Configurable replication factor** — `JARVIS_CLUSTER_RF` (e.g. RF 2 on 3 nodes); a node may
+  not host a given shard, so routing resolves the leader via the shard's replica nodes
+- **RF-agnostic routing** — hit any instance; it forwards to the shard's leader, even across nodes
+  that don't host the shard
+- **Cross-shard 2PC** + **HLC** — atomic multi-shard writes with snapshot isolation
+- **Live failover** (RF ≥ 3) — kill an instance, its shards re-elect on survivors, data intact
+- **Rich central dashboard** — health, config, consistent-hash ring, shard→node placement matrix,
+  one event feed per instance + a merged system stream; kill/restart nodes from the UI
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 
@@ -47,11 +51,10 @@ The remaining gap is no longer *integration* — it is **cross-machine hardening
 These are conscious shortcuts in the current build — each works for the demo and each is a real,
 named gap for production. Listed so the boundary is explicit, not hidden.
 
-- **Routing assumes every node hosts every shard.** With RF 3 on 3 nodes, each node holds a replica
-  of every shard, so any node can resolve any shard's leader locally and forward. At real scale
-  (e.g. 100 nodes, RF 3) a node holds only a slice of shards and needs a **placement/metadata
-  service** (à la TiKV's Placement Driver) or cached routing tables with try-and-redirect. The
-  consistent-hash *key→shard* map already generalizes; *shard→leader* resolution does not.
+- **Placement is static config, not a dynamic metadata service.** RF < node-count works (a node
+  that doesn't host a shard resolves the leader via the shard's replica nodes and forwards), but
+  the placement itself is fixed shared config. Real scale needs a **placement/metadata service**
+  (à la TiKV's Placement Driver) that tracks live shard→node assignment as it changes.
 - **2PC blocks on coordinator failure.** If the transaction coordinator dies between PREPARE and
   COMMIT, participants hold their locks indefinitely. Production needs a persisted transaction
   record + a recovery protocol (or parallel-commit) to resolve in-doubt transactions.

@@ -15,6 +15,8 @@ same way, so there is no central router to be a bottleneck or a single point of 
 
 from sharding import ConsistentHashRing
 
+RING_SIZE = 1 << 32  # the consistent-hash ring spans [0, 2^32)
+
 
 class Partitioner:
     def __init__(self, shard_ids: list[str], nodes: list[str],
@@ -54,3 +56,19 @@ class Partitioner:
         for k in keys:
             groups.setdefault(self.shard_for(k), []).append(k)
         return groups
+
+    # ---- introspection for the dashboard ----------------------------------
+
+    def placement(self) -> list[dict]:
+        return [{"shard": s, "preferred": self._placement[s][0], "replicas": self._placement[s]}
+                for s in self.shard_ids]
+
+    def ring_arcs(self) -> list[dict]:
+        """The consistent-hash ring as colored arcs: each shard owns the segments [prev, pos] of its
+        vnodes. Used to draw the ring in the UI."""
+        arcs = [{"shard": r["node"], "start": r["start"], "end": r["end"]}
+                for r in self._ring.get_token_ranges()]
+        if arcs and arcs[-1]["end"] < RING_SIZE:
+            # the wrap segment (last vnode .. ring end) belongs to the first vnode's shard
+            arcs.append({"shard": arcs[0]["shard"], "start": arcs[-1]["end"], "end": RING_SIZE})
+        return arcs

@@ -1,189 +1,12 @@
-"""
-dashboard.py — launcher + live web dashboard for the distributed database.
+package com.litedb.cluster;
 
-Spawns the cluster (one OS process per node) and serves a web UI that shows the WHOLE system at a
-glance — and the reasoning behind it:
+/** The dashboard's HTML/CSS/JS, kept apart from {@link Dashboard} for readability. Mirrors the
+ * Python dashboard UI. %NODES% and %SHARDS% are substituted at serve time. */
+final class DashboardPage {
+    private DashboardPage() {}
 
-  - health & config: instances up/total, shards, replication factor
-  - the consistent-hash ring (which shard owns which arc of the keyspace)
-  - shard → node placement matrix (leader / follower / not-hosted, live)
-  - one event feed per instance, narrating its own decisions, plus a merged system stream
-
-Controls let you write keys, run a cross-shard transaction, and kill / restart a node to watch
-failover live.
-
-Run:  python dashboard.py      then open  http://127.0.0.1:7080
-Set JARVIS_CLUSTER_RF=2 to run 3 instances with replication factor 2.
-"""
-
-import json
-import os
-import shutil
-import subprocess
-import sys
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
-
-import _loader  # noqa: F401
-from cluster_client import ClusterClient
-from cluster_config import (
-    DASHBOARD_PORT,
-    DATA_ROOT,
-    NODES,
-    REPLICATION_FACTOR,
-    SHARDS,
-    make_partitioner,
-)
-from partition import RING_SIZE
-from rpc import RPCClient
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-class Launcher:
-    def __init__(self) -> None:
-        self.procs: dict[str, subprocess.Popen] = {}
-        self.client = ClusterClient()
-        self.rpc = RPCClient(timeout=1.5)
-        self.partitioner = make_partitioner()
-
-    def start_all(self) -> None:
-        shutil.rmtree(DATA_ROOT, ignore_errors=True)
-        for nid in NODES:
-            self.start_node(nid)
-
-    def start_node(self, nid: str) -> None:
-        if nid in self.procs and self.procs[nid].poll() is None:
-            return
-        env = dict(os.environ)
-        self.procs[nid] = subprocess.Popen(
-            [sys.executable, "node.py", nid], cwd=HERE, env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def kill_node(self, nid: str) -> None:
-        p = self.procs.get(nid)
-        if p and p.poll() is None:
-            p.kill()
-            p.wait()
-
-    def stop_all(self) -> None:
-        for nid in self.procs:
-            self.kill_node(nid)
-
-    def node_events(self, nid: str, after: int) -> dict:
-        host, port = NODES[nid]
-        resp = self.rpc.call(host, port, "events", {"after": after})
-        return resp["result"] if resp.get("ok") else {"events": [], "next": after, "down": True}
-
-    def cross_shard_pair(self) -> list:
-        base = "acct:alice"
-        s0 = self.partitioner.shard_for(base)
-        for i in range(400):
-            cand = f"acct:user{i}"
-            if self.partitioner.shard_for(cand) != s0:
-                return [base, cand]
-        return [base, "acct:bob"]
-
-    def overview(self) -> dict:
-        part = self.partitioner
-        statuses = self.client.status()
-        live = {}
-        for st in statuses:
-            live[st.get("node")] = st
-
-        placement = []
-        for p in part.placement():
-            shard = p["shard"]
-            hosts = {}
-            leader = None
-            for node in p["replicas"]:
-                role = None
-                for sh in live.get(node, {}).get("shards", []):
-                    if sh["group"] == shard:
-                        role = sh["role"]
-                        if role == "leader":
-                            leader = node
-                hosts[node] = role
-            placement.append({"shard": shard, "preferred": p["preferred"],
-                              "replicas": p["replicas"], "leader": leader, "hosts": hosts})
-
-        up = sum(1 for st in statuses if st.get("alive"))
-        with_leader = sum(1 for pp in placement if pp["leader"])
-        under = [pp["shard"] for pp in placement
-                 if sum(1 for r in pp["hosts"].values() if r) < part.rf]
-        return {
-            "config": {
-                "nodes": [{"id": n, "host": NODES[n][0], "port": NODES[n][1]} for n in NODES],
-                "shards": part.shard_ids, "rf": part.rf, "ring_size": RING_SIZE,
-            },
-            "live": live,
-            "placement": placement,
-            "ring": part.ring_arcs(),
-            "health": {"up": up, "total": len(NODES), "with_leader": with_leader,
-                       "total_shards": len(part.shard_ids), "under_replicated": under},
-        }
-
-
-LAUNCHER: Launcher
-
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-
-    def _json(self, obj, code=200):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _html(self, text):
-        body = text.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        u = urlparse(self.path)
-        if u.path == "/":
-            self._html(PAGE)
-        elif u.path == "/api/overview":
-            self._json(LAUNCHER.overview())
-        elif u.path == "/api/events":
-            q = parse_qs(u.query)
-            self._json(LAUNCHER.node_events(q.get("node", [""])[0], int(q.get("after", ["0"])[0])))
-        else:
-            self._json({"error": "not found"}, 404)
-
-    def do_POST(self):
-        u = urlparse(self.path)
-        length = int(self.headers.get("Content-Length", "0"))
-        body = json.loads(self.rfile.read(length) or "{}") if length else {}
-        if u.path == "/api/put":
-            self._json(LAUNCHER.client.put(body["key"], body["value"]))
-        elif u.path == "/api/get":
-            self._json(LAUNCHER.client.get_full(body["key"]))
-        elif u.path == "/api/txn":
-            a, b = LAUNCHER.cross_shard_pair()
-            self._json(LAUNCHER.client.txn({a: "balance=900", b: "balance=1100"}))
-        elif u.path == "/api/control":
-            action, nid = body.get("action"), body.get("node")
-            if action == "kill":
-                LAUNCHER.kill_node(nid)
-            elif action == "start":
-                LAUNCHER.start_node(nid)
-            self._json({"ok": True})
-        else:
-            self._json({"error": "not found"}, 404)
-
-
-PAGE = r"""<!doctype html>
+    static final String HTML = """
+<!doctype html>
 <html><head><meta charset="utf-8"><title>litedb — distributed cluster</title>
 <style>
   :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--dim:#8b949e;--fg:#c9d1d9;--ok:#3fb950;--bad:#f85149;--warn:#d29922}
@@ -313,7 +136,7 @@ function renderConfig(ov){
 function row(k,v){return `<div class="kv"><span>${k}</span><span>${v}</span></div>`;}
 
 function renderRing(ov){
-  const R=80, cx=95, cy=95, r=64, sw=22;
+  const cx=95, cy=95, r=64, sw=22;
   let paths='';
   ov.ring.forEach(a=>{
     const a0=a.start/ov.config.ring_size*2*Math.PI - Math.PI/2;
@@ -397,28 +220,5 @@ async function control(a,n){ await post('/api/control',{action:a,node:n}); }
 
 setInterval(poll, 500); poll();
 </script>
-</body></html>"""
-
-
-def main() -> None:
-    global LAUNCHER
-    LAUNCHER = Launcher()
-    LAUNCHER.start_all()
-    globals()["PAGE"] = (PAGE.replace("%NODES%", json.dumps(list(NODES)))
-                             .replace("%SHARDS%", json.dumps(SHARDS)))
-    httpd = ThreadingHTTPServer(("127.0.0.1", DASHBOARD_PORT), Handler)
-    print(f"\n  litedb cluster up — {len(NODES)} instances, {len(SHARDS)} shards, RF {REPLICATION_FACTOR}")
-    print(f"  dashboard:  http://127.0.0.1:{DASHBOARD_PORT}\n")
-    print("  (Ctrl-C to shut the whole cluster down)\n")
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    try:
-        while True:
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        print("\n  shutting down cluster...")
-        LAUNCHER.stop_all()
-        httpd.shutdown()
-
-
-if __name__ == "__main__":
-    main()
+</body></html>""";
+}

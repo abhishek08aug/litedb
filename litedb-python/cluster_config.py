@@ -20,12 +20,16 @@ SHARDS: list[str] = [f"shard-{i}" for i in range(6)]
 
 DASHBOARD_PORT = 7080
 
+# Replication factor is configurable so you can run e.g. 3 instances with RF 2 (each shard lives on
+# only 2 of the 3 nodes — routing then has to forward across nodes that don't host a shard).
+REPLICATION_FACTOR = int(os.environ.get("JARVIS_CLUSTER_RF", "3"))
+
 DATA_ROOT = os.environ.get("JARVIS_CLUSTER_DATA",
                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cluster_data"))
 
 
 def make_partitioner() -> Partitioner:
-    return Partitioner(SHARDS, list(NODES.keys()), replication_factor=3)
+    return Partitioner(SHARDS, list(NODES.keys()), replication_factor=REPLICATION_FACTOR)
 
 
 def node_data_dir(node_id: str) -> str:

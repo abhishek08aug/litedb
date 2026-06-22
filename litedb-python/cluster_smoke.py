@@ -39,6 +39,9 @@ def main():
         client = ClusterClient()
         part = make_partitioner()
 
+        from cluster_config import REPLICATION_FACTOR
+        print(f"Replication factor = {REPLICATION_FACTOR} (each shard lives on {REPLICATION_FACTOR} "
+              f"of {len(part.nodes)} nodes)")
         print("Waiting for all 6 shards to elect leaders...")
         wait_until(lambda: len(leaders_map(client)) == 6, timeout=15, what="6 leaders")
         lm = leaders_map(client)
@@ -46,6 +49,15 @@ def main():
         spread = Counter(lm.values())
         print(f"  leaders per node: {dict(spread)}  (multi-raft spreads leadership)")
         assert len(spread) >= 2, "leadership should spread across nodes"
+
+        # placement: with RF < node-count, some node does NOT host some shard, so routing must
+        # forward across nodes that don't own a shard — exactly the RF-agnostic path.
+        hosted = {n: set(part.shards_on(n)) for n in part.nodes}
+        max_hosted = max(len(s) for s in hosted.values())
+        print(f"  shards hosted per node: { {n: len(s) for n, s in hosted.items()} }")
+        if REPLICATION_FACTOR < len(part.nodes):
+            assert max_hosted < len(part.shard_ids), "RF<N should leave some shard off some node"
+            print("  → at least one node does NOT host every shard; routing forwards across nodes")
 
         print("\nWriting 12 keys (routed to their shards by consistent hashing):")
         for i in range(12):
@@ -83,26 +95,33 @@ def main():
         print(f"  @snapshot={old!r}  latest={new!r}")
         assert old == "alice=900" and new == "alice=CHANGED"
 
-        print("\nKilling a node and verifying failover + continued service:")
-        victim = max(spread, key=spread.get)  # node leading the most shards
-        print(f"  killing {victim} (was leading {spread[victim]} shards)")
-        procs[victim].kill()
-        procs[victim].wait()
-        wait_until(lambda: len(leaders_map(client)) == 6, timeout=15,
-                   what="re-election of victim's shards onto survivors")
-        lm2 = leaders_map(client)
-        assert victim not in set(lm2.values()), "dead node still shown as leader"
-        print(f"  re-elected: leaders now on {sorted(set(lm2.values()))}")
+        # Failover requires a shard to keep a majority after one node dies. That needs RF >= 3
+        # (majority of 2 is 2, so RF=2 tolerates 0 failures — by design, not a bug).
+        if REPLICATION_FACTOR >= 3:
+            print("\nKilling a node and verifying failover + continued service:")
+            victim = max(spread, key=spread.get)  # node leading the most shards
+            print(f"  killing {victim} (was leading {spread[victim]} shards)")
+            procs[victim].kill()
+            procs[victim].wait()
+            wait_until(lambda: len(leaders_map(client)) == 6, timeout=15,
+                       what="re-election of victim's shards onto survivors")
+            lm2 = leaders_map(client)
+            assert victim not in set(lm2.values()), "dead node still shown as leader"
+            print(f"  re-elected: leaders now on {sorted(set(lm2.values()))}")
 
-        print("\nWrites still succeed after failover:")
-        r = client.put("after-failover", "ok")
-        assert r.get("ok"), r
-        assert client.get("after-failover") == "ok"
-        assert client.get(a) == "alice=CHANGED", "data from before the crash survived"
-        print("  write + read after failover OK; pre-crash data intact")
+            print("\nWrites still succeed after failover:")
+            r = client.put("after-failover", "ok")
+            assert r.get("ok"), r
+            assert client.get("after-failover") == "ok"
+            assert client.get(a) == "alice=CHANGED", "data from before the crash survived"
+            print("  write + read after failover OK; pre-crash data intact")
+        else:
+            print(f"\n(RF={REPLICATION_FACTOR} < 3 → a single node loss removes a shard's majority, "
+                  f"so failover is intentionally not exercised at this RF.)")
 
-        print("\nPHASES 4-7 OK: partitioning, multi-raft, routing, cross-shard 2PC, "
-              "snapshot isolation, and live failover — across 3 real processes.")
+        print(f"\nCLUSTER OK at RF={REPLICATION_FACTOR}: partitioning, multi-raft, RF-agnostic "
+              f"routing, cross-shard 2PC, snapshot isolation"
+              + (", and live failover." if REPLICATION_FACTOR >= 3 else "."))
     finally:
         for p in procs.values():
             if p.poll() is None:
