@@ -168,6 +168,26 @@ cross-node snapshot isolation.)
   "ready"** to serve conflict-checked writes until it applies that no-op — guaranteeing it has
   applied every inherited intent first (Raft's commit-point rule).
 
+### Dynamic membership + rebalancing — [`controller.py`](litedb-python/controller.py)
+The cluster can grow and shrink online, with data moving. Two pieces:
+
+- **Raft configuration changes** ([`raft_node.py`](litedb-python/raft_node.py)) — a group's
+  membership is its *voter set*, carried in the log as `{op:config}` entries; the latest one wins
+  (so config replicates like any entry). `reconfigure()` changes **one** voter at a time, so the old
+  and new majorities always overlap (Raft's safety condition). Quorum, elections, and commit all
+  count the *current* voters; a leader removed from the config keeps leading until that change
+  **commits**, then steps down (so the new config is durable first).
+- **A control plane** ([`controller.py`](litedb-python/controller.py), a simplified TiKV Placement
+  Driver) — holds the authoritative shard→node placement, computes an even target when the node set
+  changes, and applies the moves one membership change at a time: to add a replica it creates a
+  follower on the target node and adds it to the config — the node then **catches up via Raft**
+  (this *is* the data moving) — then drops the old replica. Adding a node rebalances shards onto it;
+  removing one re-replicates its shards to restore RF.
+
+The control plane is a single orchestrator (a SPOF for *control* operations, not the data plane —
+shards keep serving through their Raft groups). Production replicates it (PD-as-Raft-group) or
+decentralizes it (CockroachDB); see [ROADMAP.md](ROADMAP.md).
+
 ### Watching it — [`events.py`](litedb-python/events.py) / [`dashboard.py`](litedb-python/dashboard.py)
 Each node emits a human-readable event for every meaningful action (election, accepting a leader,
 routing by hashing, replicating, applying, running 2PC). The dashboard shows cluster health, config,
@@ -190,6 +210,11 @@ done. If the coordinator dies after the decision, its restart sweep finishes it.
 log; the shard re-elects a new leader that inherits the intent; the new leader rejects conflicting
 writes (until and after it's ready) and commits when the coordinator's COMMIT arrives.
 
+**Add a node** — the controller computes a new even placement → for each shard moving onto the new
+node, it creates a follower there and appends a config entry adding it (one server at a time) → the
+follower catches up via Raft (the data moves) → the controller drops an old replica. Remove is the
+mirror: add a replacement replica elsewhere to restore RF, then drop the departing one.
+
 ---
 
 ## Design decisions (the interview-defensible set)
@@ -206,6 +231,8 @@ writes (until and after it's ready) and commits when the coordinator's COMMIT ar
 | 2PC for cross-shard atomicity | single Raft commit is atomic only within a shard | blocking protocol; parallel-commit would cut latency |
 | HLC for commit timestamps | cross-shard snapshots need a global clock | needs bounded clock skew across machines (NTP / TrueTime) |
 | Replicated intents (Percolator) + readiness gate | prepared state survives a leader change → correct recovery | extra Raft round-trip per prepare |
+| Raft config changes, one server at a time | safe membership change (majorities overlap); enables online add/remove + rebalancing | single-server only (no joint consensus); naive even-spread balancer |
+| Single controller / placement driver | simple authority for placement + rebalancing | SPOF for control ops (not data); production replicates or decentralizes it |
 
 ---
 
@@ -234,4 +261,5 @@ pytest test_distributed.py
 python cluster_smoke.py            # partitioning, multi-raft, 2PC, failover
 python recovery_smoke.py           # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py   # 2PC participant-leader-crash recovery
+python rebalance_smoke.py          # add a node (data rebalances on) then remove it (re-replicates)
 ```

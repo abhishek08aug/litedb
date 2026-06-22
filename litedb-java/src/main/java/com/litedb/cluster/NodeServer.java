@@ -30,19 +30,21 @@ public final class NodeServer {
     private final Map<String, Rpc.Handler> handlers = new LinkedHashMap<>();
     private final Rpc.Server server;
     private final TxnLog txnlog;
+    private final String dataDir;
+    private volatile boolean running = false;
+    // shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
+    private volatile Map<String, List<String>> placement;
 
     public NodeServer(String nodeId) throws Exception {
         this.nodeId = nodeId;
         this.port = ClusterConfig.port(nodeId);
-        this.partitioner = ClusterConfig.makePartitioner();
-        String dataDir = ClusterConfig.nodeDataDir(nodeId);
+        this.partitioner = ClusterConfig.makePartitioner();  // key -> shard (static)
+        this.dataDir = ClusterConfig.nodeDataDir(nodeId);
         this.txnlog = new TxnLog(dataDir);
 
-        for (String s : partitioner.shardsOn(nodeId)) {
-            List<String> peers = new ArrayList<>();
-            for (String n : partitioner.replicas(s)) if (!n.equals(nodeId)) peers.add(n);
-            shards.put(s, new ShardReplica(nodeId, s, peers, makeSend(s), dataDir, hlc,
-                    partitioner.preferredLeader(s).equals(nodeId), events));
+        this.placement = ClusterConfig.computePlacement(ClusterConfig.INITIAL_NODES);
+        for (Map.Entry<String, List<String>> e : placement.entrySet()) {
+            if (e.getValue().contains(nodeId)) createReplica(e.getKey(), e.getValue());
         }
 
         handlers.put("vote", p -> shards.get(p.get("shard")).raft.handleVote(p));
@@ -61,7 +63,59 @@ public final class NodeServer {
                         (String) p.get("coordinator"))));
         handlers.put("shard_commit", p -> withShard(p, r -> r.commitPrepared((String) p.get("txn_id"), 3000)));
         handlers.put("shard_abort", p -> withShard(p, r -> r.abortPrepared((String) p.get("txn_id"))));
+        // cluster membership / rebalancing (driven by the controller)
+        handlers.put("host_shard", this::onHostShard);
+        handlers.put("drop_shard", this::onDropShard);
+        handlers.put("reconfigure", this::onReconfigure);
+        handlers.put("update_placement", this::onUpdatePlacement);
         this.server = new Rpc.Server(port, handlers);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void createReplica(String shard, List<String> voters) {
+        if (shards.containsKey(shard)) return;
+        List<String> peers = new ArrayList<>();
+        for (String n : voters) if (!n.equals(nodeId)) peers.add(n);
+        try {
+            ShardReplica rep = new ShardReplica(nodeId, shard, peers, makeSend(shard), dataDir, hlc,
+                    !voters.isEmpty() && voters.get(0).equals(nodeId), events, voters);
+            shards.put(shard, rep);
+            if (running) rep.start();
+        } catch (Exception e) {
+            throw new RuntimeException("createReplica failed", e);
+        }
+    }
+
+    private Map<String, Object> onHostShard(Map<String, Object> p) {
+        @SuppressWarnings("unchecked")
+        List<String> voters = (List<String>) p.get("voters");
+        createReplica((String) p.get("shard"), voters);
+        events.emit("config", "asked to host " + p.get("shard") + " (config " + voters
+                + ") — created a follower replica; will catch up via Raft");
+        return resp("ok", true);
+    }
+
+    private Map<String, Object> onDropShard(Map<String, Object> p) {
+        ShardReplica rep = shards.remove(p.get("shard"));
+        if (rep != null) {
+            rep.stop();
+            events.emit("config", "dropped my replica of " + p.get("shard") + " (no longer assigned here)");
+        }
+        return resp("ok", true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> onReconfigure(Map<String, Object> p) {
+        ShardReplica rep = shards.get(p.get("shard"));
+        if (rep == null) return resp("ok", false, "error", "not_hosted");
+        Long idx = rep.reconfigure((List<String>) p.get("voters"));
+        return resp("ok", idx != null, "index", idx);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> onUpdatePlacement(Map<String, Object> p) {
+        this.placement = (Map<String, List<String>>) p.get("placement");
+        return resp("ok", true);
     }
 
     private RaftGroup.Transport makeSend(String shardId) {
@@ -73,6 +127,7 @@ public final class NodeServer {
     }
 
     public void start() throws Exception {
+        running = true;
         server.start();
         for (ShardReplica r : shards.values()) r.start();
         Thread t = new Thread(this::sweepLoop, "txn-sweep");
@@ -153,7 +208,7 @@ public final class NodeServer {
                 String lid = rep.leaderId();
                 if (lid != null) return lid;
             } else {
-                for (String repNode : partitioner.replicas(shard)) {
+                for (String repNode : placement.getOrDefault(shard, List.of())) {
                     if (repNode.equals(nodeId)) continue;
                     Map<String, Object> res = call(repNode, "shard_leader", resp("shard", shard));
                     if (Boolean.TRUE.equals(res.get("ok")) && res.get("leader") != null) {
@@ -316,7 +371,8 @@ public final class NodeServer {
         sorted.sort(String::compareTo);
         for (String s : sorted) {
             Map<String, Object> st = shards.get(s).status();
-            st.put("preferred", partitioner.preferredLeader(s).equals(nodeId));
+            List<String> placed = placement.getOrDefault(s, List.of());
+            st.put("preferred", !placed.isEmpty() && placed.get(0).equals(nodeId));
             shardStatus.add(st);
         }
         return resp("ok", true, "node", nodeId, "alive", true, "shards", shardStatus);

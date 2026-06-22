@@ -12,12 +12,13 @@ import java.util.Map;
  */
 public final class ClusterConfig {
 
+    // Address book: POOL of possible nodes (so any can reach any). Cluster starts with INITIAL_NODES;
+    // more can be added at runtime (up to the pool) or active ones removed.
     public static final Map<String, int[]> NODES = new LinkedHashMap<>();
     static {
-        NODES.put("node-1", new int[]{7101});
-        NODES.put("node-2", new int[]{7102});
-        NODES.put("node-3", new int[]{7103});
+        for (int i = 1; i <= 6; i++) NODES.put("node-" + i, new int[]{7100 + i});
     }
+    public static final List<String> INITIAL_NODES = List.of("node-1", "node-2", "node-3");
     public static final String HOST = "127.0.0.1";
 
     public static final List<String> SHARDS = new ArrayList<>();
@@ -42,7 +43,21 @@ public final class ClusterConfig {
     public static List<String> nodeIds() { return new ArrayList<>(NODES.keySet()); }
 
     public static Partitioner makePartitioner() {
-        return new Partitioner(SHARDS, nodeIds(), replicationFactor(), 64);
+        return new Partitioner(SHARDS, INITIAL_NODES, replicationFactor(), 64);
+    }
+
+    /** Even round-robin assignment of shards to `rf` of the active nodes (round-robin order, NOT
+     * sorted, so the preferred leader — replicas[0] — rotates and write load spreads). The balancer's
+     * target; recomputing it when the node set changes yields the shards that must move. */
+    public static Map<String, List<String>> computePlacement(List<String> nodes) {
+        int rf = Math.min(replicationFactor(), nodes.size());
+        Map<String, List<String>> p = new LinkedHashMap<>();
+        for (int i = 0; i < SHARDS.size(); i++) {
+            List<String> reps = new ArrayList<>();
+            for (int j = 0; j < rf; j++) reps.add(nodes.get((i + j) % nodes.size()));
+            p.put(SHARDS.get(i), reps);
+        }
+        return p;
     }
 
     public static String nodeDataDir(String nodeId) {

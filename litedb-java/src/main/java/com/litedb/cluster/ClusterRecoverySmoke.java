@@ -51,7 +51,7 @@ public class ClusterRecoverySmoke {
         if (Files.exists(root)) Files.walk(root).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
         Partitioner part = ClusterConfig.makePartitioner();
         Map<String, Process> procs = new LinkedHashMap<>();
-        for (String nid : ClusterConfig.nodeIds()) procs.put(nid, spawn(nid));
+        for (String nid : ClusterConfig.INITIAL_NODES) procs.put(nid, spawn(nid));
         Rpc.Client rpc = new Rpc.Client(3000);
         try {
             ClusterClient client = new ClusterClient();

@@ -32,13 +32,15 @@ production-grade database.
 > single-machine distributed cluster**: multiple instances that partition data into shards
 > (consistent hashing), replicate each shard through its own Raft group (multi-raft), route
 > requests to leaders (with a configurable replication factor), commit cross-shard transactions via
-> 2PC, and recover in-doubt 2PC after a coordinator *or* participant crash (prepared intents are
-> replicated through Raft). A live web dashboard shows cluster health, config, the consistent-hash
+> 2PC, recover in-doubt 2PC after a coordinator *or* participant crash (prepared intents are
+> replicated through Raft), and **add/remove nodes online** — shards (with their data) rebalance via
+> Raft membership changes. A live web dashboard shows cluster health, config, the consistent-hash
 > ring, the shard→node placement matrix, and one event feed per instance narrating its reasoning;
-> you can kill/restart nodes and watch failover. Launch it with `python dashboard.py` or
-> `java com.litedb.cluster.Dashboard`. It is a real end-to-end integration on one machine; it is
-> **not** hardened for the cross-machine failure matrix (membership changes, snapshot install,
-> parallel-commit, Jepsen-grade testing). See [ROADMAP.md](ROADMAP.md) for what is built vs. remains.
+> you can kill/restart nodes, add/remove nodes, and watch failover + rebalancing. Launch it with
+> `python dashboard.py` or `java com.litedb.cluster.Dashboard`. It is a real end-to-end integration
+> on one machine; it is **not** hardened for the cross-machine failure matrix (replicated control
+> plane, range split/merge, snapshot install, parallel-commit, Jepsen-grade testing). See
+> [ROADMAP.md](ROADMAP.md) for what is built vs. remains.
 
 ---
 

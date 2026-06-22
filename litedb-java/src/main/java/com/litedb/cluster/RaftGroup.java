@@ -10,6 +10,7 @@ import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,7 +51,12 @@ public final class RaftGroup {
 
     public final String nodeId;
     public final String groupId;
-    private final List<String> peers;
+    // Membership = a CONFIGURATION (voting members incl. self), carried in the log as
+    // {"op":"config","voters":[...]} entries; the latest in the log wins. `peers` (replication / vote
+    // targets) is derived = voters - self.
+    private final Set<String> initialVoters;
+    private Set<String> voters;
+    private List<String> peers;
     private final Transport transport;
     private final StateMachine stateMachine;
     private final Events events;
@@ -83,9 +89,20 @@ public final class RaftGroup {
 
     public RaftGroup(String nodeId, String groupId, List<String> peers, Transport transport,
                      StateMachine stateMachine, String dataDir, boolean preferred, Events events) {
+        this(nodeId, groupId, peers, transport, stateMachine, dataDir, preferred, events, null);
+    }
+
+    public RaftGroup(String nodeId, String groupId, List<String> peers, Transport transport,
+                     StateMachine stateMachine, String dataDir, boolean preferred, Events events,
+                     List<String> voters) {
         this.nodeId = nodeId;
         this.groupId = groupId;
-        this.peers = new ArrayList<>(peers);
+        // A joining node passes `voters` = the current config WITHOUT itself (it's a non-voting
+        // follower until the add-config entry replicates to it). Default: peers + self are voters.
+        this.initialVoters = new LinkedHashSet<>(voters != null ? voters : peers);
+        if (voters == null) this.initialVoters.add(nodeId);
+        this.voters = new LinkedHashSet<>(this.initialVoters);
+        this.peers = peersFromVoters();
         this.transport = transport;
         this.stateMachine = stateMachine;
         this.preferred = preferred;
@@ -95,6 +112,12 @@ public final class RaftGroup {
         this.logPath = new File(dataDir, "raft-" + groupId + ".log");
         this.electionTimeoutMs = newTimeout();
         recover();
+    }
+
+    private List<String> peersFromVoters() {
+        List<String> p = new ArrayList<>();
+        for (String v : voters) if (!v.equals(nodeId)) p.add(v);
+        return p;
     }
 
     // ---- persistence ------------------------------------------------------
@@ -128,6 +151,7 @@ public final class RaftGroup {
         } catch (IOException e) {
             throw new RuntimeException("raft recover failed", e);
         }
+        refreshVotersFromLog();
     }
 
     private static byte[] readAll(File f) throws IOException {
@@ -257,7 +281,34 @@ public final class RaftGroup {
     }
 
     private int majority() {
-        return (peers.size() + 1) / 2 + 1;
+        return voters.size() / 2 + 1;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void refreshVotersFromLog() {
+        Set<String> v = initialVoters;
+        for (int i = log.size() - 1; i >= 0; i--) {
+            Object c = log.get(i).get("command");
+            if (c instanceof Map && "config".equals(((Map<String, Object>) c).get("op"))) {
+                v = new LinkedHashSet<>((List<String>) ((Map<String, Object>) c).get("voters"));
+                break;
+            }
+        }
+        setVoters(v);
+    }
+
+    private void setVoters(Set<String> v) {
+        if (v.equals(voters)) return;
+        voters = new LinkedHashSet<>(v);
+        peers = peersFromVoters();
+        long nxt = log.size() + 1;
+        for (String p : peers) {
+            nextIndex.putIfAbsent(p, nxt);
+            matchIndex.putIfAbsent(p, 0L);
+        }
+        events.emit("config", groupId + ": configuration is now " + new java.util.TreeSet<>(voters));
+        // NB: a leader removed from the config keeps leading until that config COMMITS, then steps
+        // down (handled in applyCommitted), so the new config is durable first.
     }
 
     // ---- election ---------------------------------------------------------
@@ -267,7 +318,7 @@ public final class RaftGroup {
             try { Thread.sleep(20); } catch (InterruptedException e) { return; }
             lock.lock();
             try {
-                if (role == Role.LEADER) continue;
+                if (role == Role.LEADER || !voters.contains(nodeId)) continue;  // non-voters don't elect
                 long elapsedMs = (System.nanoTime() - lastHeartbeatNs) / 1_000_000;
                 if (elapsedMs >= electionTimeoutMs) startElection();
             } finally {
@@ -312,7 +363,8 @@ public final class RaftGroup {
             if (term > currentTerm) { becomeFollower(term); return; }
             if (Boolean.TRUE.equals(r.get("vote_granted"))) {
                 votesReceived.add((String) r.get("voter_id"));
-                if (votesReceived.size() >= majority()) becomeLeader();
+                long votes = votesReceived.stream().filter(voters::contains).count();
+                if (votes >= majority()) becomeLeader();
             }
         } finally {
             lock.unlock();
@@ -409,7 +461,8 @@ public final class RaftGroup {
                 nextIndex.put(peer, mi + 1);
                 advanceCommit();
             } else {
-                nextIndex.put(peer, Math.max(1, nextIndex.getOrDefault(peer, 1L) - 1));
+                // jump to the follower's reported log end (O(1) catch-up for a far-behind/new replica)
+                nextIndex.put(peer, Math.max(1, num(r, "match_index") + 1));
             }
         } finally {
             lock.unlock();
@@ -419,8 +472,8 @@ public final class RaftGroup {
     private void advanceCommit() {
         for (long idx = log.size(); idx > commitIndex; idx--) {
             if (num(log.get((int) idx - 1), "term") != currentTerm) continue;
-            int count = 1;
-            for (String p : peers) if (matchIndex.getOrDefault(p, 0L) >= idx) count++;
+            int count = voters.contains(nodeId) ? 1 : 0;   // count voters only (learners don't count)
+            for (String p : peers) if (voters.contains(p) && matchIndex.getOrDefault(p, 0L) >= idx) count++;
             if (count >= majority()) {
                 commitIndex = idx;
                 applyCommitted();
@@ -478,6 +531,7 @@ public final class RaftGroup {
                 }
             }
             if (rewrote) rewriteLog();
+            if (!entries.isEmpty()) refreshVotersFromLog();  // a replicated config entry changes membership
 
             long leaderCommit = num(req, "leader_commit");
             if (leaderCommit > commitIndex) {
@@ -517,6 +571,13 @@ public final class RaftGroup {
                     + " reached a majority → COMMITTED; applied to the storage engine ("
                     + summarize(command) + ")");
         }
+        // A leader removed from the (now-committed) configuration steps down.
+        if (role == Role.LEADER && !voters.contains(nodeId)) {
+            events.emit("config", groupId + ": I was removed from the config and it committed → "
+                    + "stepping down as leader");
+            role = Role.FOLLOWER;
+            leaderId = null;
+        }
         commitCv.signalAll();
     }
 
@@ -552,6 +613,33 @@ public final class RaftGroup {
         }
     }
 
+    /** Leader-only single-server membership change (one voter added/removed at a time so old and new
+     * majorities overlap). Config takes effect immediately (latest-in-log) and replicates as a normal
+     * entry. Returns the entry index or null. */
+    public Long reconfigure(List<String> newVoters) {
+        lock.lock();
+        try {
+            if (role != Role.LEADER) return null;
+            Set<String> want = new LinkedHashSet<>(newVoters);
+            Set<String> sym = new LinkedHashSet<>(voters);
+            sym.addAll(want);
+            int diff = 0;
+            for (String n : sym) if (voters.contains(n) != want.contains(n)) diff++;
+            if (diff != 1) {
+                events.emit("config", groupId + ": REFUSED config change (must change one voter at a time)");
+                return null;
+            }
+            Map<String, Object> cmd = new LinkedHashMap<>();
+            cmd.put("op", "config");
+            cmd.put("voters", new ArrayList<>(want));
+            Long index = propose(cmd);
+            refreshVotersFromLog();
+            return index;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public boolean waitCommit(long index, long timeoutMs) {
         long deadline = System.nanoTime() + timeoutMs * 1_000_000;
         lock.lock();
@@ -578,7 +666,8 @@ public final class RaftGroup {
             return resp("group", groupId, "node", nodeId, "role", role.name().toLowerCase(),
                     "ready", role == Role.LEADER && lastAppliedTerm == currentTerm,
                     "term", currentTerm, "leader", leaderId, "log_len", (long) log.size(),
-                    "commit_index", commitIndex, "last_applied", lastApplied);
+                    "commit_index", commitIndex, "last_applied", lastApplied,
+                    "voters", new ArrayList<>(new java.util.TreeSet<>(voters)));
         } finally {
             lock.unlock();
         }

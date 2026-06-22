@@ -225,6 +225,9 @@ End to end, it demonstrates:
   survives a participant leader crash (a new leader inherits it — isolation preserved)
 - **Failover** — kill an instance from the UI and watch its shards re-elect leaders on the
   survivors, data intact (persisted Raft logs replay on restart)
+- **Dynamic membership + rebalancing** — add a node (shards + their data rebalance onto it via Raft
+  membership changes + catch-up) or remove one (its shards re-replicate to restore RF), online,
+  driven by a control plane (`controller.py`) and a `+ Add node` / `- Remove node` button in the UI
 
 Each instance has its own dashboard panel streaming its reasoning — election timeouts, accepting a
 leader, routing by consistent hashing, replicating, applying, running 2PC — so you can *watch* the
@@ -240,6 +243,7 @@ distributed logic instead of reading about it.
 | `node.py` | one instance (a NodeServer): hosts every shard, routes requests, coordinates 2PC, recovers in-doubt txns |
 | `cluster_client.py` | contact-any-node client |
 | `txn_log.py` | coordinator's durable transaction log (2PC recovery) |
+| `controller.py` | control plane: placement + online rebalancing on node add/remove |
 | `events.py` / `dashboard.py` | per-instance event log + launcher + live dashboard |
 
 ```bash
@@ -247,14 +251,17 @@ pytest test_distributed.py          # fast in-process tests (RPC, Raft, replicat
 python cluster_smoke.py             # 3 real processes, full scenario (set JARVIS_CLUSTER_RF=2 for RF 2)
 python recovery_smoke.py            # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py # 2PC participant-leader-crash recovery (replicated intents)
+python rebalance_smoke.py           # add a node (data rebalances on) then remove it (re-replicates)
 ```
 
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of
-the distributed algorithms — real RPC, real Raft, real partitioning, real 2PC, real failover, and
-real 2PC failure recovery (coordinator *and* participant) — but it is **not** hardened for the
-cross-machine failure matrix: no Raft membership changes, snapshot install is log-based, no
-parallel-commit, and it is not Jepsen-tested. The same cluster is implemented in Java
-(`com.litedb.cluster`). See [../ROADMAP.md](../ROADMAP.md) for exactly what is built vs. what remains.
+the distributed algorithms — real RPC, real Raft (incl. single-server membership changes), real
+partitioning, real 2PC, real failover, real 2PC failure recovery (coordinator *and* participant),
+and real online rebalancing — but it is **not** hardened for the cross-machine failure matrix: the
+control plane is a single orchestrator (not a replicated PD), the balancer is naive even-spread (no
+range split/merge), snapshot install is log-based, no parallel-commit, and it is not Jepsen-tested.
+The same cluster is implemented in Java (`com.litedb.cluster`). See [../ROADMAP.md](../ROADMAP.md)
+for exactly what is built vs. what remains.
 
 ---
 

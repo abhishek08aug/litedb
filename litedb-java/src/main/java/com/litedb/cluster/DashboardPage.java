@@ -55,7 +55,7 @@ final class DashboardPage {
   .ev .cat{display:inline-block;min-width:74px;font-size:10px;text-transform:uppercase}
   .ev .node{color:var(--dim);font-size:10px}
   .election{color:#d29922}.leader{color:#3fb950}.vote{color:#39c5cf}.replication{color:#58a6ff}
-  .apply{color:#e6edf3}.routing{color:#bc8cff}.txn{color:#f0883e}
+  .apply{color:#e6edf3}.routing{color:#bc8cff}.txn{color:#f0883e}.config{color:#79c0ff}
   .nfoot{padding:6px 12px;border-top:1px solid var(--line)}
   .nfoot button{font-size:11px;padding:3px 8px;width:100%}
   .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px}
@@ -76,6 +76,8 @@ final class DashboardPage {
     <button class="primary" onclick="put()">PUT</button>
     <button onclick="get()">GET</button>
     <button onclick="txn()">Cross-shard txn (2PC)</button>
+    <button id="btn-add" onclick="control('add_node')">+ Add node</button>
+    <button id="btn-rm" onclick="control('remove_node')">- Remove node</button>
   </div>
 </header>
 <div class="wrap">
@@ -87,11 +89,13 @@ final class DashboardPage {
   </div>
   <div class="section-title">Instances — each panel narrates its own reasoning</div>
   <div class="nodes" id="grid"></div>
+  <div class="section-title">Control plane - rebalancing log (add / remove node)</div>
+  <div class="card"><div id="ctrl"></div></div>
   <div class="section-title">System event stream (all instances, newest first)</div>
   <div class="card"><div id="stream"></div></div>
 </div>
 <script>
-const ORDER = %NODES%;
+let ORDER = %NODES%;
 const SHARDS = %SHARDS%;
 const COLORS = ["#58a6ff","#3fb950","#f0883e","#bc8cff","#39c5cf","#d29922","#db61a2","#a5d6ff"];
 const colorOf = s => COLORS[SHARDS.indexOf(s) % COLORS.length];
@@ -104,12 +108,23 @@ function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 async function poll(){
   let ov;
   try { ov = await (await fetch('/api/overview')).json(); } catch(e){ return; }
-  renderHeader(ov); renderConfig(ov); renderRing(ov); renderPlacement(ov);
+  const active = ov.config.active;
+  active.forEach(n => { if(!(n in cursors)){ cursors[n]=0; feeds[n]=[]; } });
+  const changed = JSON.stringify(active) !== JSON.stringify(ORDER);
+  ORDER = active;
+  renderHeader(ov); renderConfig(ov); renderRing(ov); renderPlacement(ov); renderCtrl(ov);
   const grid = document.getElementById('grid');
   grid.style.gridTemplateColumns = `repeat(${ORDER.length},1fr)`;
-  if(grid.children.length !== ORDER.length){ grid.innerHTML=''; ORDER.forEach(n=>grid.appendChild(buildNode(n))); }
+  if(changed || grid.children.length !== ORDER.length){ grid.innerHTML=''; ORDER.forEach(n=>grid.appendChild(buildNode(n))); }
   for(const nid of ORDER){ renderHead(nid, ov.live[nid]||{alive:false}); await pullEvents(nid); }
   renderStream();
+  document.getElementById('btn-add').disabled = !ov.config.can_add;
+  document.getElementById('btn-rm').disabled = !ov.config.can_remove;
+}
+function renderCtrl(ov){
+  const box=document.getElementById('ctrl'); box.innerHTML='';
+  (ov.control_log||[]).slice().reverse().forEach(m=> box.appendChild(el('div','ev',`<span class="cat config">control</span> ${esc(m)}`)));
+  if(!(ov.control_log||[]).length) box.innerHTML='<div style="color:var(--dim)">use the Add / Remove node buttons to rebalance the cluster</div>';
 }
 
 function renderHeader(ov){

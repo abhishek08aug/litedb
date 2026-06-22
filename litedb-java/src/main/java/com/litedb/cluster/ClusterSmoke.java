@@ -51,7 +51,7 @@ public class ClusterSmoke {
         String cp = System.getProperty("java.class.path");
         String javaBin = System.getProperty("java.home") + "/bin/java";
         Map<String, Process> procs = new LinkedHashMap<>();
-        for (String nid : ClusterConfig.nodeIds()) {
+        for (String nid : ClusterConfig.INITIAL_NODES) {
             ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", cp, "com.litedb.cluster.NodeServer", nid);
             pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             pb.redirectError(ProcessBuilder.Redirect.DISCARD);

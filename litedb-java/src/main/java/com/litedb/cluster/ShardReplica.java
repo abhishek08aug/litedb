@@ -23,15 +23,18 @@ public final class ShardReplica {
     private final ReentrantLock lock = new ReentrantLock();
 
     public ShardReplica(String nodeId, String shardId, List<String> peers, RaftGroup.Transport transport,
-                        String dataDir, Hlc hlc, boolean preferred, RaftGroup.Events events) throws IOException {
+                        String dataDir, Hlc hlc, boolean preferred, RaftGroup.Events events,
+                        List<String> voters) throws IOException {
         this.nodeId = nodeId;
         this.shardId = shardId;
         this.hlc = hlc;
         this.store = new ShardStore(dataDir + "/shard-" + shardId + "-data");
         this.raft = new RaftGroup(nodeId, shardId, peers, transport,
                 (index, command) -> store.apply(command),
-                dataDir + "/shard-" + shardId + "-raft", preferred, events);
+                dataDir + "/shard-" + shardId + "-raft", preferred, events, voters);
     }
+
+    public Long reconfigure(List<String> voters) { return raft.reconfigure(voters); }
 
     public void start() { raft.start(); }
     public void stop() { raft.stop(); store.close(); }

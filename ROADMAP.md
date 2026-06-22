@@ -43,13 +43,20 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
   leader crash; a new leader inherits them); a leader serves conflict-checked writes only after
   applying its election no-op, so no write can bypass an inherited intent
 - **Live failover** (RF ≥ 3) — kill an instance, its shards re-elect on survivors, data intact
+- **Dynamic membership + online rebalancing** — **Raft configuration changes** (voter set carried in
+  the log, one server changed at a time so majorities overlap; a removed leader steps down only after
+  the change commits) + a **control plane** (`controller.py` / `Controller.java`): add a node and
+  shards (with their data) rebalance onto it via Raft catch-up; remove a node and its shards
+  re-replicate to restore RF — online, data intact
 - **Rich central dashboard** — health, config, consistent-hash ring, shard→node placement matrix,
-  one event feed per instance + a merged system stream; kill/restart nodes from the UI
+  one event feed per instance + a merged system stream; kill/restart **and add/remove** nodes from the
+  UI, with a control-plane rebalancing log
 
 **Run it:** `python dashboard.py` or `java com.litedb.cluster.Dashboard` → http://127.0.0.1:7080
 (Java: 7180). **Tests:** `pytest test_distributed.py`; `python cluster_smoke.py` /
-`recovery_smoke.py` / `participant_recovery_smoke.py`; Java `ClusterSmoke` / `ClusterRecoverySmoke`
-/ `ClusterParticipantRecoverySmoke`. Set `JARVIS_CLUSTER_RF=2` to run replication factor 2.
+`recovery_smoke.py` / `participant_recovery_smoke.py` / `rebalance_smoke.py`; Java `ClusterSmoke` /
+`ClusterRecoverySmoke` / `ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke`. Set
+`JARVIS_CLUSTER_RF=2` for replication factor 2.
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 
@@ -60,10 +67,15 @@ The remaining gap is no longer *integration* — it is **cross-machine hardening
 These are conscious shortcuts in the current build — each works for the demo and each is a real,
 named gap for production. Listed so the boundary is explicit, not hidden.
 
-- **Placement is static config, not a dynamic metadata service.** RF < node-count works (a node
-  that doesn't host a shard resolves the leader via the shard's replica nodes and forwards), but
-  the placement itself is fixed shared config. Real scale needs a **placement/metadata service**
-  (à la TiKV's Placement Driver) that tracks live shard→node assignment as it changes.
+- **The control plane (placement driver) is a single orchestrator — a SPOF for control operations,
+  not the data plane.** Membership changes and rebalancing are driven by one `Controller` that holds
+  the placement map in memory; if it dies mid-rebalance, a change can be left half-applied. Crucially
+  it is NOT in the data path — shards keep serving via their Raft groups — so a controller outage
+  means "can't rebalance," not "database down." Production replicates the controller as its own Raft
+  group (TiKV's PD) or decentralizes it (CockroachDB), persisting in-flight moves so a new controller
+  leader can finish them — the same durable-record + take-over pattern used here for 2PC recovery.
+- **Rebalancing is even-spread; no range split/merge.** The balancer assigns whole fixed shards
+  round-robin; it has no capacity/load awareness, throttling, or range splitting as data grows.
 - **2PC recovery covers coordinator AND participant failure (single-machine).** The coordinator
   persists a transaction record (`txn_log.py` / `TxnLog.java`) and a periodic sweep re-drives
   in-doubt transactions to completion — `committing` → re-send COMMIT, `aborted` → re-send ABORT,
@@ -81,7 +93,9 @@ named gap for production. Listed so the boundary is explicit, not hidden.
   commit-wait / TrueTime) to keep snapshot isolation correct under skew.
 - **Fixed shards, no range split/merge.** The shard set is static; there is no rebalancing as data
   grows or nodes join/leave.
-- **No Raft membership changes.** The cluster roster is static config; no joint-consensus add/remove.
+- **Membership change is single-server only.** Add/remove one voter at a time is implemented; there's
+  no joint-consensus (multi-server) change, no learner-then-promote phase, and no automatic
+  failure-detector that triggers re-replication (the controller drives removal explicitly).
 - **Snapshot install is log-based.** A far-behind replica catches up by log replication, not by
   shipping a compacted snapshot — fine for small logs, not for large state.
 - **Static service discovery.** Node addresses come from shared config; no gossip / failure
@@ -110,8 +124,10 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 - [x] Each shard backed by a real LSM/MVCC engine
 - [x] One Raft group **per shard** (multi-raft), leadership spread across nodes
 - [x] Route live KV operations to the owning shard's leader
+- [x] A placement driver / balancer (even-spread): add/remove a node → shards rebalance online, with
+      data moving via Raft catch-up; remove → re-replicate to restore RF (`controller.py` / `Controller.java`)
 - [ ] Range split/merge as data grows/shrinks (shards are fixed today)
-- [ ] A placement driver / balancer: capacity- and load-aware placement; hot-shard movement
+- [ ] Capacity-/load-aware placement, hot-shard movement, throttled relocation (the balancer is naive)
 
 ### 3. Distributed transactions & time
 - [x] Cross-shard atomic commit via 2PC
@@ -127,7 +143,9 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 ### 4. Cluster lifecycle & membership
 - [x] Automated failover end-to-end (Raft election → client-visible leader change)
 - [ ] Gossip / membership, heartbeats, failure detection across machines
-- [ ] Raft membership changes: node add / drain / decommission; rebalancing on topology change
+- [x] Raft membership changes (single-server) + online rebalancing on node add/remove
+- [ ] Gossip / heartbeat failure detector to trigger re-replication automatically (controller-driven today)
+- [ ] Joint-consensus (multi-server) changes; learner-then-promote to avoid catch-up stalls
 - [ ] Online schema changes / migrations propagated cluster-wide; catalog consistency
 
 ### 5. Routing & client layer

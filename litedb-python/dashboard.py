@@ -135,12 +135,17 @@ class Launcher:
                 hosts[node] = role
             placement.append({"shard": shard, "preferred": replicas[0] if replicas else None,
                               "replicas": replicas, "leader": leader, "hosts": hosts})
-        placement.sort(key=lambda p: p["shard"])
+        placement.sort(key=lambda p: str(p["shard"]))
 
+        rf = min(part.rf, len(active))
         up = sum(1 for n in active if live.get(n, {}).get("alive"))
         with_leader = sum(1 for pp in placement if pp["leader"])
-        under = [pp["shard"] for pp in placement
-                 if sum(1 for r in pp["hosts"].values() if r) < min(part.rf, len(active))]
+        under = []
+        for pp in placement:
+            h = pp["hosts"]
+            assert isinstance(h, dict)
+            if sum(1 for r in h.values() if r) < rf:
+                under.append(pp["shard"])
         return {
             "config": {
                 "active": active,
