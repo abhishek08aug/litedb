@@ -14,10 +14,10 @@ import threading
 
 from lsm_engine import LSMEngine
 from mvcc import (
-    TOMBSTONE,
     _HI16,
     _HI_CHAR,
     _SEP,
+    TOMBSTONE,
     _ts_from_version_key,
     _user_key_from_version_key,
     _version_key,

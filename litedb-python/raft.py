@@ -51,14 +51,12 @@ CONCEPT:
   with simulated network (direct method calls with optional delays).
 """
 
+import random
 import threading
 import time
-import random
-import queue
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Any
-
+from typing import Any, Optional
 
 # ======================================================================= #
 #  Data structures                                                         #
@@ -322,7 +320,8 @@ class RaftNode:
                 return
             next_idx = self.next_index.get(peer_id, 1)
             prev_log_index = next_idx - 1
-            prev_log_term = self.log[prev_log_index - 1].term if prev_log_index > 0 and prev_log_index <= len(self.log) else 0
+            prev_log_term = (self.log[prev_log_index - 1].term
+                             if 0 < prev_log_index <= len(self.log) else 0)
             entries = self.log[next_idx - 1:]  # entries to send
             req = AppendRequest(
                 term=self.current_term,
@@ -576,8 +575,7 @@ if __name__ == "__main__":
     # --- Step 4: Read from leader ---
     print("\n[Step 4] Reading from leader...")
     for key in ["name", "city", "score", "missing"]:
-        val = cluster.read(key)
-        print(f"  GET {key!r} → {val!r}")
+        print(f"  GET {key!r} → {cluster.read(key)!r}")
 
     # --- Step 5: Simulate leader failure ---
     print("\n[Step 5] Simulating leader failure...")

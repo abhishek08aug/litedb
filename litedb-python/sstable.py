@@ -37,8 +37,8 @@ CONCEPT:
     This avoids expensive disk reads for keys that don't exist.
 """
 
-import os
 import json
+import os
 import struct
 import zlib
 from typing import Iterator
@@ -200,7 +200,7 @@ class SSTableReader:
                 raise ValueError(f"Not a valid SSTable file: {self.path}")
 
             self._index_offset = struct.unpack(">Q", footer[0:8])[0]
-            index_len = struct.unpack(">I", footer[8:12])[0]
+            # footer[8:12] is the index length (not needed: we read the index by offset)
             self._entry_count = struct.unpack(">I", footer[12:16])[0]
             self._bloom_offset = struct.unpack(">Q", footer[16:24])[0]
 
@@ -315,7 +315,8 @@ class SSTableReader:
 # ======================================================================= #
 
 if __name__ == "__main__":
-    import tempfile, shutil
+    import shutil
+    import tempfile
 
     data_dir = tempfile.mkdtemp(prefix="litedb_sstable_demo_")
     sstable_path = os.path.join(data_dir, "sst_000001.sst")

@@ -40,10 +40,9 @@ CONCEPT:
 """
 
 from __future__ import annotations
-import re
-from dataclasses import dataclass, field
-from typing import Any, Optional, Iterator
 
+from dataclasses import dataclass
+from typing import Any, Iterator, Optional
 
 # ======================================================================= #
 #  Tokenizer                                                               #
@@ -276,7 +275,7 @@ class Parser:
     def peek(self) -> Token:
         return self.tokens[self.pos]
 
-    def consume(self, expected_type: str = None) -> Token:
+    def consume(self, expected_type: Optional[str] = None) -> Token:
         tok = self.tokens[self.pos]
         if expected_type and tok.type != expected_type:
             raise SyntaxError(
@@ -644,8 +643,9 @@ class SQLDatabase:
 
         # ORDER BY
         if stmt.order_by:
+            ob = stmt.order_by
             rows.sort(
-                key=lambda r: (r.get(stmt.order_by) is None, r.get(stmt.order_by)),
+                key=lambda r: (r.get(ob) is None, r.get(ob)),
                 reverse=stmt.order_desc
             )
 

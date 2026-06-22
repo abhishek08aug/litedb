@@ -73,7 +73,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-
 # ======================================================================= #
 #  Enums & constants                                                       #
 # ======================================================================= #
@@ -591,7 +590,7 @@ if __name__ == "__main__":
 
     tx4.set("name", "Bob")  # tx4 writes "Bob"
     tx4.commit()
-    print(f"  tx4 committed: name = 'Bob'")
+    print("  tx4 committed: name = 'Bob'")
 
     # tx3 started before tx4 committed → still sees "Alice"
     print(f"  tx3 (started before tx4) sees name = {tx3.get('name')!r}  ← snapshot isolation!")

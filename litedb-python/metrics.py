@@ -40,15 +40,14 @@ CONCEPT:
     - Metrics help capacity planning and SLA monitoring
 """
 
-import time
-import threading
-import statistics
 import random
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from typing import Optional, Any
+import statistics
+import threading
+import time
+from collections import deque
 from contextlib import contextmanager
-
+from dataclasses import dataclass, field
+from typing import Optional
 
 # ======================================================================= #
 #  Metrics Registry                                                        #
@@ -60,7 +59,7 @@ class Counter:
     def __init__(self, name: str, description: str = ""):
         self.name = name
         self.description = description
-        self._value = 0
+        self._value = 0.0
         self._lock = threading.Lock()
 
     def inc(self, amount: float = 1.0):
@@ -112,7 +111,7 @@ class Histogram:
 
     DEFAULT_BUCKETS = [0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, float("inf")]
 
-    def __init__(self, name: str, description: str = "", buckets: list[float] = None):
+    def __init__(self, name: str, description: str = "", buckets: Optional[list[float]] = None):
         self.name = name
         self.description = description
         self.buckets = sorted(buckets or self.DEFAULT_BUCKETS)
@@ -180,7 +179,7 @@ class MetricsRegistry:
             return self._gauges[name]
 
     def histogram(self, name: str, description: str = "",
-                  buckets: list[float] = None) -> Histogram:
+                  buckets: Optional[list[float]] = None) -> Histogram:
         with self._lock:
             if name not in self._histograms:
                 self._histograms[name] = Histogram(name, description, buckets)
@@ -610,7 +609,7 @@ if __name__ == "__main__":
     print("\n[Part 5] Latency histogram buckets")
     hist = db.m_latency
     print(f"  Total observations: {hist.count()}")
-    print(f"  Bucket distribution:")
+    print("  Bucket distribution:")
     prev = 0
     for bucket in hist.bucket_summary():
         le = bucket["le"]
@@ -622,7 +621,7 @@ if __name__ == "__main__":
             print(f"    ≤{label:8s}: {in_bucket:3d}  {bar}")
         prev = count
 
-    print(f"\n  Percentiles:")
+    print("\n  Percentiles:")
     for p in [50, 75, 90, 95, 99, 99.9]:
         print(f"    p{p:5.1f}: {hist.percentile(p):.2f}ms")
 

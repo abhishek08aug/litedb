@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: litedb-python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: pip install ruff mypy pytest
+      - name: Ruff (lint)
+        run: ruff check .
+      - name: Mypy (types)
+        run: mypy .
+      - name: Pytest
+        run: pytest -q
+
+  java:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: litedb-java
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile (javac, no build tool required)
+        run: |
+          find src/main/java -name "*.java" > sources.txt
+          javac -d out @sources.txt

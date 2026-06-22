@@ -19,10 +19,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402
-
-from btree import BPlusTree               # type: ignore
-from wal import WriteAheadLog             # type: ignore
+from btree import BPlusTree  # type: ignore
 from storage_engine import StorageEngine  # type: ignore
+from wal import WriteAheadLog  # type: ignore
 
 
 class BTreeEngine(StorageEngine):

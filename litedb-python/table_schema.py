@@ -4,8 +4,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import row_codec        # type: ignore
-from column import Column   # type: ignore
+import row_codec  # type: ignore
+from column import Column  # type: ignore
 
 
 class TableSchema:

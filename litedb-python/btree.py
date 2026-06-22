@@ -51,9 +51,9 @@ CONCEPT:
 """
 
 from __future__ import annotations
-from typing import Optional, Iterator
-import bisect
 
+import bisect
+from typing import Iterator, Optional
 
 # ======================================================================= #
 #  B+ Tree Node                                                            #
@@ -345,7 +345,7 @@ class BPlusTree:
         where k = number of results. No need to traverse internal nodes.
         """
         # Find the first leaf that could contain start_key
-        leaf = self._find_leaf(start_key)
+        leaf: Optional[BPlusNode] = self._find_leaf(start_key)
 
         while leaf is not None:
             for i, key in enumerate(leaf.keys):

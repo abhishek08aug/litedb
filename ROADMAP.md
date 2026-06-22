@@ -42,6 +42,34 @@ The remaining gap is no longer *integration* — it is **cross-machine hardening
 
 ---
 
+## Known simplifications (deliberate, single-machine scope)
+
+These are conscious shortcuts in the current build — each works for the demo and each is a real,
+named gap for production. Listed so the boundary is explicit, not hidden.
+
+- **Routing assumes every node hosts every shard.** With RF 3 on 3 nodes, each node holds a replica
+  of every shard, so any node can resolve any shard's leader locally and forward. At real scale
+  (e.g. 100 nodes, RF 3) a node holds only a slice of shards and needs a **placement/metadata
+  service** (à la TiKV's Placement Driver) or cached routing tables with try-and-redirect. The
+  consistent-hash *key→shard* map already generalizes; *shard→leader* resolution does not.
+- **2PC blocks on coordinator failure.** If the transaction coordinator dies between PREPARE and
+  COMMIT, participants hold their locks indefinitely. Production needs a persisted transaction
+  record + a recovery protocol (or parallel-commit) to resolve in-doubt transactions.
+- **HLC assumes roughly-synced clocks.** On one machine all processes read the same clock, so
+  snapshot ordering is exact. Across machines you need NTP plus **uncertainty bounds** (Spanner's
+  commit-wait / TrueTime) to keep snapshot isolation correct under skew.
+- **Fixed shards, no range split/merge.** The shard set is static; there is no rebalancing as data
+  grows or nodes join/leave.
+- **No Raft membership changes.** The cluster roster is static config; no joint-consensus add/remove.
+- **Snapshot install is log-based.** A far-behind replica catches up by log replication, not by
+  shipping a compacted snapshot — fine for small logs, not for large state.
+- **Static service discovery.** Node addresses come from shared config; no gossip / failure
+  detector across machines.
+- **Not adversarially tested.** No Jepsen / partition / fault-injection suite; correctness is shown
+  by scripted scenarios, not proven under the full failure matrix.
+
+---
+
 ## The ladder to distributed, production-grade
 
 Ordered roughly by dependency. Each tier assumes the ones above it.

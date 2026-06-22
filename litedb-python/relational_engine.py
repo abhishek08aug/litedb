@@ -10,22 +10,22 @@ isolation). Catalog, rows, and index entries are all MVCC-versioned keys:
   __idx__/<table>/<column>/<encodedValue>\\0<pk>
 """
 
-import os
-import sys
-import re
 import functools
+import os
+import re
+import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402
-
-import sql_parser as sp                          # type: ignore
-import row_codec                                 # type: ignore
-import type_codec                                # type: ignore
-from mvcc import MVCCEngine, ConflictException    # type: ignore
-from catalog import Catalog                       # type: ignore
-from table_schema import TableSchema              # type: ignore
-from column import Column                         # type: ignore
-from index_def import IndexDef                    # type: ignore
+import row_codec  # type: ignore
+import sql_parser as sp  # type: ignore
+import type_codec  # type: ignore
+from catalog import Catalog  # type: ignore
+from column import Column  # type: ignore
+from index_def import IndexDef  # type: ignore
+from mvcc import ConflictException, MVCCEngine, Transaction  # type: ignore
+from table_schema import TableSchema  # type: ignore
 
 SEP = chr(0)
 _HI = chr(0x10FFFF)
@@ -37,7 +37,7 @@ class RelationalEngine:
     def __init__(self, mvcc: MVCCEngine):
         self._mvcc = mvcc
         self._catalog = Catalog(mvcc)
-        self._current = None   # active explicit transaction, or None (auto-commit)
+        self._current: Optional[Transaction] = None   # active explicit transaction, or None (auto-commit)
 
     @property
     def catalog(self):
@@ -66,11 +66,13 @@ class RelationalEngine:
 
         auto = self._current is None
         tx = self._mvcc.begin() if auto else self._current
+        assert tx is not None  # fresh when auto; the active txn otherwise
         try:
             result = self._dispatch(sql, tx)
         except ConflictException as e:
-            if auto: tx.rollback()
-            else: self._current.rollback(); self._current = None
+            tx.rollback()
+            if not auto:
+                self._current = None
             return f"ERROR: {e}"
         if auto:
             if result.startswith("ERROR") or not tx.has_writes():
@@ -329,9 +331,10 @@ class RelationalEngine:
 # ======================================================================= #
 
 def _main():
-    import tempfile
     import shutil
-    from lsm_engine import LSMEngine   # type: ignore
+    import tempfile
+
+    from lsm_engine import LSMEngine  # type: ignore
 
     d = tempfile.mkdtemp(prefix="litedb_rel_")
     lsm = LSMEngine(d)

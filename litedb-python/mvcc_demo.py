@@ -1,15 +1,14 @@
 """mvcc_demo.py — snapshot isolation, conflict detection, tombstone deletes, GC, persistence."""
 
 import os
-import sys
 import shutil
+import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402
-
-from lsm_engine import LSMEngine                  # type: ignore
-from mvcc import MVCCEngine, ConflictException    # type: ignore
+from lsm_engine import LSMEngine  # type: ignore
+from mvcc import ConflictException, MVCCEngine  # type: ignore
 
 
 def line(s):

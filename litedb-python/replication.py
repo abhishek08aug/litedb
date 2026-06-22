@@ -39,19 +39,17 @@ CONCEPT:
     Primary responds with all entries after offset 41.
 """
 
-import sys
-import os
 import json
+import os
 import socket
+import sys
 import threading
 import time
 from typing import Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402
-
 from wal import WALEntry  # type: ignore
-
 
 # ======================================================================= #
 #  PRIMARY SIDE: ReplicationPublisher                                      #
@@ -275,7 +273,7 @@ class ReplicationSubscriber:
                 sock.close()
 
             except ConnectionRefusedError:
-                print(f"[Replica] Primary not available, retrying in 2s...")
+                print("[Replica] Primary not available, retrying in 2s...")
                 time.sleep(2)
             except Exception as e:
                 print(f"[Replica] Error: {e}, retrying in 2s...")
@@ -298,7 +296,6 @@ class ReplicationSubscriber:
 # ======================================================================= #
 
 if __name__ == "__main__":
-    import tempfile, shutil
 
     print("=" * 60)
     print("REPLICATION DEMO")

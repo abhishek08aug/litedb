@@ -16,26 +16,24 @@ Usage:
 Pure Python stdlib — no dependencies to install.
 """
 
-import sys
 import os
-import tempfile
 import shutil
-import time
-import threading
 import subprocess
+import sys
+import tempfile
+import time
 
 # Make sure we can import our modules
 _dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _dir)
 
-import _loader  # type: ignore  # ensures litedb/ is on sys.path
 
-from wal import WriteAheadLog, WALEntry                          # type: ignore
-from memtable import MemTable, TOMBSTONE                         # type: ignore
-from sstable import SSTableWriter, SSTableReader, BloomFilter    # type: ignore
-from lsm_engine import LSMEngine                                 # type: ignore
-from query_parser import QueryParser                             # type: ignore
+from lsm_engine import LSMEngine  # type: ignore
+from memtable import TOMBSTONE, MemTable  # type: ignore
+from query_parser import QueryParser  # type: ignore
 from replication import ReplicationPublisher, ReplicationSubscriber  # type: ignore
+from sstable import SSTableWriter  # type: ignore
+from wal import WALEntry, WriteAheadLog  # type: ignore
 
 
 def separator(title: str):
@@ -106,13 +104,13 @@ def demo_memtable():
     mt.set("banana", "yellow")
     mt.set("cherry", "red")
     mt.set("date", "brown")
-    print(f"  SET apple=red, banana=yellow, cherry=red, date=brown")
+    print("  SET apple=red, banana=yellow, cherry=red, date=brown")
     print(f"  GET apple  → {mt.get('apple')!r}")
     print(f"  GET mango  → {mt.get('mango')!r}  (not found)")
 
     section("Tombstone delete")
     mt.delete("banana")
-    print(f"  DELETE banana")
+    print("  DELETE banana")
     print(f"  GET banana → {mt.get('banana')!r}  ← TOMBSTONE")
 
     section("Sorted items (as flushed to SSTable)")
@@ -521,7 +519,7 @@ def main():
 
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)
-        print(f"  Cleaned up temp directory.")
+        print("  Cleaned up temp directory.")
 
     print()
     print("=" * 64)

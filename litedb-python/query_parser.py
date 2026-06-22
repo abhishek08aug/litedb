@@ -33,11 +33,12 @@ CONCEPT:
 """
 
 from __future__ import annotations
+
 import shlex
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lsm_engine import LSMEngine  # type: ignore
+    pass  # type: ignore
 
 
 class QueryResult:

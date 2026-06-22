@@ -42,12 +42,11 @@ CONCEPT:
     and itself. Keys in that range are stored on that node.
 """
 
-import hashlib
 import bisect
+import hashlib
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
-
 
 # ======================================================================= #
 #  Consistent Hash Ring                                                    #
@@ -388,7 +387,7 @@ if __name__ == "__main__":
     print(f"  Keys with 3 nodes: {assignments_3}")
     print(f"  Keys with 4 nodes: {assignments_4}")
     print(f"  Keys that MOVED when adding node 4: {moved}/{len(keys)} = {moved/len(keys)*100:.0f}%")
-    print(f"  ← This is terrible! Consistent hashing fixes this.")
+    print("  ← This is terrible! Consistent hashing fixes this.")
 
     # ------------------------------------------------------------------ #
     # Part 2: Consistent hash ring                                        #
@@ -433,7 +432,7 @@ if __name__ == "__main__":
     moved_keys = [k for k in test_keys if assignments_before[k] != assignments_after[k]]
     print(f"  Keys that moved: {moved_keys}")
     print(f"  Keys moved: {len(moved_keys)}/{len(test_keys)} = {len(moved_keys)/len(test_keys)*100:.0f}%")
-    print(f"  Expected ~25% (1/4 of keys) — consistent hashing!")
+    print("  Expected ~25% (1/4 of keys) — consistent hashing!")
 
     dist = ring.load_distribution()
     print(f"  New distribution: { {n: f'{p:.1f}%' for n, p in sorted(dist.items())} }")
@@ -477,7 +476,7 @@ if __name__ == "__main__":
     for i in range(100):
         store.set(f"key:{i:03d}", f"value_{i}")
 
-    print(f"  After writing 100 keys to 3 shards:")
+    print("  After writing 100 keys to 3 shards:")
     sizes = store.shard_sizes()
     for shard, count in sorted(sizes.items()):
         bar = "█" * (count // 2)

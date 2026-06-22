@@ -8,8 +8,8 @@ plain names from any working directory.
 Usage: import _loader  (before any other local imports)
 """
 
-import sys
 import os
+import sys
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 

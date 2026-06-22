@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+# F = pyflakes (real bugs: unused/undefined names), I = import order, W = whitespace warnings,
+# E501 = line length, E9 = syntax. The pycodestyle style rules (E701/E702 compound statements,
+# etc.) are intentionally off — this codebase uses a deliberately compact one-line style in places.
+select = ["F", "I", "W", "E501", "E9"]
+# E402: every module does `import _loader` (sys.path bootstrap) before its local imports.
+ignore = ["E402"]
+
+[tool.ruff.lint.per-file-ignores]
+# dashboard.py embeds an HTML/CSS/JS page as a string literal; those lines are legitimately long.
+"dashboard.py" = ["E501"]
+# test setup lines (send_fn lambdas wiring host/port) read better unwrapped.
+"test_distributed.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+# pragmatic: this is a teaching codebase, not a typed library — check for real mistakes, not for
+# exhaustive annotation coverage.
+disable_error_code = ["var-annotated"]

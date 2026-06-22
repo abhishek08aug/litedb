@@ -1,15 +1,14 @@
 """atomicity_demo.py — shows LSMEngine.write_batch is all-or-nothing across a crash."""
 
 import os
-import sys
 import shutil
+import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402
-
-from lsm_engine import LSMEngine        # type: ignore
-from storage_engine import WriteOp      # type: ignore
+from lsm_engine import LSMEngine  # type: ignore
+from storage_engine import WriteOp  # type: ignore
 
 
 def main():

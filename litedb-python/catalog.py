@@ -8,8 +8,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from table_schema import TableSchema   # type: ignore
-from index_def import IndexDef         # type: ignore
+from index_def import IndexDef  # type: ignore
+from table_schema import TableSchema  # type: ignore
 
 TABLE_PREFIX = "__catalog__/table/"
 INDEX_PREFIX = "__catalog__/index/"

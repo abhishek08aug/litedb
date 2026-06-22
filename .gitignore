@@ -36,3 +36,10 @@ Thumbs.db
 # distributed cluster runtime data
 litedb-python/_cluster_data/
 _cluster_data/
+
+# build / tool caches
+litedb-java/out/
+litedb-java/sources.txt
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

@@ -17,13 +17,12 @@ WAL Entry Format (binary):
   the checksum won't match and we skip that entry.
 """
 
-import os
 import json
+import os
 import struct
-import zlib
 import threading
+import zlib
 from typing import Iterator
-
 
 # Sentinel value for deleted keys (tombstone)
 TOMBSTONE = "__DELETED__"
@@ -143,20 +142,20 @@ class WriteAheadLog:
                 # Read payload
                 payload = f.read(payload_length)
                 if len(payload) < payload_length:
-                    print(f"[WAL] Truncated entry at offset — skipping (crash during write)")
+                    print("[WAL] Truncated entry at offset — skipping (crash during write)")
                     break
 
                 # Read checksum
                 checksum_bytes = f.read(self.CHECKSUM_SIZE)
                 if len(checksum_bytes) < self.CHECKSUM_SIZE:
-                    print(f"[WAL] Missing checksum — skipping")
+                    print("[WAL] Missing checksum — skipping")
                     break
 
                 # Verify checksum
                 expected_crc = struct.unpack(">I", checksum_bytes)[0]
                 actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
                 if expected_crc != actual_crc:
-                    print(f"[WAL] CRC mismatch — entry corrupted, skipping")
+                    print("[WAL] CRC mismatch — entry corrupted, skipping")
                     break
 
                 try:
@@ -175,7 +174,7 @@ class WriteAheadLog:
             self._file.close()
             os.remove(self.path)
             self._file = open(self.path, "ab")
-            print(f"[WAL] Truncated (data safely flushed to SSTable)")
+            print("[WAL] Truncated (data safely flushed to SSTable)")
 
     def close(self):
         with self._lock:
@@ -191,7 +190,8 @@ class WriteAheadLog:
 # ======================================================================= #
 
 if __name__ == "__main__":
-    import tempfile, shutil
+    import shutil
+    import tempfile
 
     data_dir = tempfile.mkdtemp(prefix="litedb_wal_demo_")
     wal_path = os.path.join(data_dir, "wal.log")

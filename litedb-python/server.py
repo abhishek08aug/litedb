@@ -19,20 +19,19 @@ CONCEPT:
     nc localhost 7379              # or any TCP client
 """
 
-import sys
-import os
-import socket
-import threading
 import argparse
+import os
 import signal
+import socket
+import sys
+import threading
 
 # Add current directory to path so we can import our modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402  — registers numbered files under short names
-
-from lsm_engine import LSMEngine          # type: ignore
-from btree_engine import BTreeEngine      # type: ignore
-from query_parser import QueryParser      # type: ignore
+from btree_engine import BTreeEngine  # type: ignore
+from lsm_engine import LSMEngine  # type: ignore
+from query_parser import QueryParser  # type: ignore
 
 
 class ClientHandler(threading.Thread):

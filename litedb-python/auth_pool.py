@@ -46,13 +46,11 @@ CONCEPT:
 import hashlib
 import hmac
 import os
-import time
 import threading
-import queue
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, Callable, Any
-
+from typing import Any, Callable, Optional
 
 # ======================================================================= #
 #  Authentication                                                          #
@@ -62,7 +60,7 @@ class AuthError(Exception):
     pass
 
 
-def _hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
+def _hash_password(password: str, salt: Optional[bytes] = None) -> tuple[bytes, bytes]:
     """
     Hash a password using PBKDF2-HMAC-SHA256.
     Returns (salt, hash).
@@ -181,7 +179,7 @@ class AuthManager:
 
             if user.locked:
                 self._audit("LOGIN_BLOCKED", username, success=False, reason="account_locked")
-                raise AuthError(f"Account locked. Contact administrator.")
+                raise AuthError("Account locked. Contact administrator.")
 
             if not _verify_password(password, user.salt, user.password_hash):
                 user.login_attempts += 1
@@ -244,7 +242,8 @@ class AuthManager:
         self._audit("PERMISSION_GRANTED", user.username, success=True,
                     extra={"permission": perm.name, "resource": resource})
 
-    def _audit(self, event: str, username: str, success: bool, reason: str = "", extra: dict = None):
+    def _audit(self, event: str, username: str, success: bool, reason: str = "",
+               extra: Optional[dict] = None):
         self._audit_log.append({
             "timestamp": time.time(),
             "event": event,
@@ -605,7 +604,7 @@ if __name__ == "__main__":
         print(f"  alice can {perm.name}? {'✓' if allowed else '✗'}")
 
     # Admin changes alice's role
-    print(f"\n  Admin demotes alice to READ_ONLY...")
+    print("\n  Admin demotes alice to READ_ONLY...")
     auth.set_role(admin_user, "alice", Role.READ_ONLY)
     alice_user = auth.authenticate("alice", "Alice@5678!")
     print(f"  alice new role: {alice_user.role.value}")
@@ -698,9 +697,9 @@ if __name__ == "__main__":
     print(f"  Initial tokens: {limiter.tokens_available():.1f}")
 
     # Burst: 10 requests immediately (should all pass)
-    allowed = sum(1 for _ in range(10) if limiter.allow())
-    denied  = sum(1 for _ in range(5)  if not limiter.allow())
-    print(f"  Burst 10 requests: {allowed} allowed")
+    burst_ok = len([1 for _ in range(10) if limiter.allow()])
+    denied  = len([1 for _ in range(5)  if not limiter.allow()])
+    print(f"  Burst 10 requests: {burst_ok} allowed")
     print(f"  Next 5 requests (bucket empty): {denied} denied")
 
     # Wait for refill

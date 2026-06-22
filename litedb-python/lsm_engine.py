@@ -36,23 +36,20 @@ CONCEPT:
   We implement a simplified 2-level version for clarity.
 """
 
+import glob
 import os
 import sys
-import glob
-import heapq
 import threading
-import time
 from typing import Iterator
 
 # Register numbered source files under short module names
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _loader  # noqa: F401, E402
-
-from wal import WriteAheadLog  # type: ignore
-from memtable import MemTable, TOMBSTONE  # type: ignore
-from sstable import SSTableWriter, SSTableReader  # type: ignore
-from storage_engine import StorageEngine  # type: ignore
+from memtable import TOMBSTONE, MemTable  # type: ignore
 from secondary_index import SecondaryIndex  # type: ignore
+from sstable import SSTableReader, SSTableWriter  # type: ignore
+from storage_engine import StorageEngine  # type: ignore
+from wal import WriteAheadLog  # type: ignore
 
 
 class LSMEngine(StorageEngine):
@@ -213,9 +210,6 @@ class LSMEngine(StorageEngine):
         Returns only live (non-deleted) keys.
         """
         with self._lock:
-            # Collect iterators from all sources
-            iterators = []
-
             # MemTable items (sorted)
             mem_items = [
                 (k, v, 0)  # (key, value, source_priority)
@@ -514,7 +508,8 @@ class LSMEngine(StorageEngine):
 # ======================================================================= #
 
 if __name__ == "__main__":
-    import tempfile, shutil
+    import shutil
+    import tempfile
 
     data_dir = tempfile.mkdtemp(prefix="litedb_lsm_demo_")
 
