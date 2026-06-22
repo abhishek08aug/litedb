@@ -68,7 +68,7 @@ def _raft_cluster(tmp, ports):
         g = RaftGroup(
             node_id=nid, group_id="g", peers=peers,
             send_fn=lambda peer, kind, payload, c=client: c.call(HOST, ports[peer], kind, payload, timeout=RPC_TIMEOUT),
-            apply_fn=lambda idx, cmd, a=applied[nid]: a.__setitem__(cmd["key"], cmd["value"]),
+            apply_fn=lambda idx, cmd, a=applied[nid]: a.__setitem__(cmd["key"], cmd["value"]) if "key" in cmd else None,
             data_dir=f"{tmp}/{nid}",
         )
         s = RPCServer(HOST, ports[nid], {"vote": g.handle_vote, "append": g.handle_append})
@@ -87,7 +87,7 @@ def test_raft_election_replication_failover():
     ports = {"A": 19411, "B": 19412, "C": 19413}
     client, reps, servers, applied, make = _raft_cluster(tmp, ports)
     try:
-        leader = _wait(lambda: next((r for r in reps.values() if r.is_leader()), None))
+        leader = _wait(lambda: next((r for r in reps.values() if r.is_ready()), None))
         assert leader is not None, "no leader elected"
 
         for i in range(5):
@@ -102,7 +102,7 @@ def test_raft_election_replication_failover():
         reps[dead].stop()
         servers[dead].stop()
         survivors = [r for nid, r in reps.items() if nid != dead]
-        new_leader = _wait(lambda: next((r for r in survivors if r.is_leader()), None))
+        new_leader = _wait(lambda: next((r for r in survivors if r.is_ready()), None))
         assert new_leader is not None, "no failover"
         for i in range(5, 8):
             idx = new_leader.propose({"op": "set", "key": f"k{i}", "value": f"v{i}"})
@@ -141,7 +141,7 @@ def test_shard_replicated_mvcc_and_snapshot_isolation():
             srv.start()
             rep.start()
 
-        leader = _wait(lambda: next((r for r in reps.values() if r.is_leader()), None))
+        leader = _wait(lambda: next((r for r in reps.values() if r.is_ready()), None))
         assert leader is not None
 
         r = leader.commit_write({"alice": "100"})

@@ -25,7 +25,7 @@ public class ClusterRecoverySmoke {
             for (Object so : shards) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> sh = (Map<String, Object>) so;
-                if ("leader".equals(sh.get("role"))) m.put((String) sh.get("group"), (String) sh.get("node"));
+                if ("leader".equals(sh.get("role")) && Boolean.TRUE.equals(sh.get("ready"))) m.put((String) sh.get("group"), (String) sh.get("node"));
             }
         }
         return m;

@@ -24,7 +24,7 @@ def leaders_map(client):
         if not node.get("alive"):
             continue
         for sh in node.get("shards", []):
-            if sh["role"] == "leader":
+            if sh["role"] == "leader" and sh.get("ready"):
                 m[sh["group"]] = sh["node"]
     return m
 

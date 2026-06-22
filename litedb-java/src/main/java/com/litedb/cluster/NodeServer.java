@@ -17,6 +17,9 @@ import java.util.Map;
  */
 public final class NodeServer {
 
+    static final long SWEEP_INTERVAL_MS = 2000;   // how often the coordinator re-drives in-doubt txns
+    static final double PREPARE_TIMEOUT_S = 10.0;  // 'preparing' this long → coordinator died → abort
+
     private final String nodeId;
     private final int port;
     private final Partitioner partitioner;
@@ -54,7 +57,8 @@ public final class NodeServer {
         handlers.put("shard_write", p -> withShard(p, r -> r.commitWrite(writes(p), readTs(p), 3000)));
         handlers.put("shard_get", this::onShardGet);
         handlers.put("shard_prepare", p -> withShard(p, r ->
-                r.prepare((String) p.get("txn_id"), writes(p), num(p, "read_ts"), num(p, "commit_ts"))));
+                r.prepare((String) p.get("txn_id"), writes(p), num(p, "read_ts"), num(p, "commit_ts"),
+                        (String) p.get("coordinator"))));
         handlers.put("shard_commit", p -> withShard(p, r -> r.commitPrepared((String) p.get("txn_id"), 3000)));
         handlers.put("shard_abort", p -> withShard(p, r -> r.abortPrepared((String) p.get("txn_id"))));
         this.server = new Rpc.Server(port, handlers);
@@ -71,26 +75,43 @@ public final class NodeServer {
     public void start() throws Exception {
         server.start();
         for (ShardReplica r : shards.values()) r.start();
-        Thread t = new Thread(this::recoverTxns, "txn-recovery");
+        Thread t = new Thread(this::sweepLoop, "txn-sweep");
         t.setDaemon(true);
         t.start();
     }
 
-    /** On restart, finish any 2PC this node was coordinating when it died. */
-    @SuppressWarnings("unchecked")
-    private void recoverTxns() {
-        sleep(2000);  // let the RPC server + peers come up and elect leaders
-        for (Map<String, Object> rec : txnlog.pending()) {
-            String txnId = (String) rec.get("txn_id");
-            boolean commit = "committing".equals(rec.get("status"));
-            events.emit("txn", "RECOVERY: in-doubt txn " + txnId + " was '" + rec.get("status")
-                    + "' when I crashed → resolving as " + (commit ? "COMMIT" : "ABORT") + " on restart");
-            for (Object po : (List<Object>) rec.get("participants")) {
-                List<Object> ls = (List<Object>) po;
-                call((String) ls.get(0), commit ? "shard_commit" : "shard_abort",
-                        resp("shard", ls.get(1), "txn_id", txnId));
+    /** Drives in-doubt 2PC to completion. Prepared intents are replicated through each shard's Raft
+     * log, so a restarted replica or a new leader rebuilds them automatically — this loop only drives
+     * the COORDINATOR side, re-sending commit/abort until every participant has acked. */
+    private void sweepLoop() {
+        sleep(1500);
+        while (true) {
+            try {
+                sweepOnce();
+            } catch (Exception e) {
+                events.emit("txn", "sweep error: " + e.getMessage());
             }
-            txnlog.remove(txnId);
+            sleep(SWEEP_INTERVAL_MS);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void sweepOnce() {
+        for (Map<String, Object> rec : txnlog.pending()) {
+            String status = (String) rec.get("status");
+            if ("preparing".equals(status)) {
+                double ts = rec.get("ts") == null ? 0 : ((Number) rec.get("ts")).doubleValue();
+                if (System.currentTimeMillis() / 1000.0 - ts > PREPARE_TIMEOUT_S) {
+                    events.emit("txn", "RECOVERY: txn " + rec.get("txn_id")
+                            + " stuck 'preparing' past timeout → deciding ABORT");
+                    driveTxn(txnWrite((String) rec.get("txn_id"), "aborted",
+                            (List<Object>) rec.get("participants"), ((Number) rec.get("commit_ts")).longValue()));
+                }
+            } else {
+                events.emit("txn", "RECOVERY: re-driving " + status + " txn " + rec.get("txn_id")
+                        + " (a participant had not acked)");
+                driveTxn(rec);
+            }
         }
     }
 
@@ -113,6 +134,16 @@ public final class NodeServer {
         Map<String, Object> r = client.call(ClusterConfig.HOST, ClusterConfig.port(node), method, payload);
         if (!Boolean.TRUE.equals(r.get("ok"))) return resp("ok", false, "error", r.get("error"));
         return (Map<String, Object>) r.get("result");
+    }
+
+    /** Like call(), but retries while a just-elected leader is not yet ready (committing its no-op). */
+    private Map<String, Object> callReady(String node, String method, Map<String, Object> payload) {
+        Map<String, Object> res = call(node, method, payload);
+        for (int i = 0; i < 25 && "not_ready".equals(res.get("error")); i++) {
+            sleep(100);
+            res = call(node, method, payload);
+        }
+        return res;
     }
 
     private String leaderOf(String shard, int retries) {
@@ -171,7 +202,7 @@ public final class NodeServer {
         events.emit("routing", "GET " + key + " → maps to " + shard + " (consistent hashing); "
                 + relation + ", so I resolved its leader = " + leader
                 + " and forward the read there (linearizable)");
-        return call(leader, "shard_get", resp("shard", shard, "key", key, "read_ts", p.get("read_ts")));
+        return callReady(leader, "shard_get", resp("shard", shard, "key", key, "read_ts", p.get("read_ts")));
     }
 
     private Map<String, Object> onShardGet(Map<String, Object> p) {
@@ -200,7 +231,7 @@ public final class NodeServer {
                     + " (consistent hashing); " + relation
                     + (leader.equals(nodeId) ? " → single-shard commit via Raft"
                        : ", so I resolved its leader = " + leader + " → forwarding the write there"));
-            Map<String, Object> res = call(leader, "shard_write",
+            Map<String, Object> res = callReady(leader, "shard_write",
                     resp("shard", shard, "writes", w, "read_ts", readTs));
             res.putIfAbsent("shards", new ArrayList<>(List.of(shard)));
             return res;
@@ -223,42 +254,60 @@ public final class NodeServer {
             if (leader == null) return resp("ok", false, "error", "no_leader", "shard", shard);
             participants.add(new ArrayList<>(List.of(leader, shard)));
         }
-        txnlog.write(txnId, resp("txn_id", txnId, "status", "preparing",
-                "participants", participants, "commit_ts", commitTs));
+        txnWrite(txnId, "preparing", participants, commitTs);
 
-        List<String[]> prepared = new ArrayList<>();
         for (Object po : participants) {
             @SuppressWarnings("unchecked")
             List<Object> ls = (List<Object>) po;
             String leader = (String) ls.get(0), shard = (String) ls.get(1);
             events.emit("txn", "2PC " + txnId + ": PREPARE " + shard + " on leader " + leader
-                    + " (validate no conflict + stage writes, holding a lock)");
-            Map<String, Object> res = call(leader, "shard_prepare", resp(
+                    + " (validate no conflict + stage writes durably, holding a lock)");
+            Map<String, Object> res = callReady(leader, "shard_prepare", resp(
                     "shard", shard, "txn_id", txnId, "writes", groups.get(shard),
-                    "read_ts", rts, "commit_ts", commitTs));
+                    "read_ts", rts, "commit_ts", commitTs, "coordinator", nodeId));
             if (!Boolean.TRUE.equals(res.get("ok"))) {
                 events.emit("txn", "2PC " + txnId + ": " + shard + " voted NO (" + res.get("error")
-                        + ") → ABORTING the whole transaction (atomicity)");
-                abortAll(prepared, txnId);
-                txnlog.remove(txnId);
+                        + ") → deciding ABORT for the whole transaction (atomicity)");
+                driveTxn(txnWrite(txnId, "aborted", participants, commitTs));
                 return resp("ok", false, "error", "prepare_failed", "shard", shard);
             }
-            prepared.add(new String[]{leader, shard});
         }
         // COMMIT POINT: all voted YES → durably record the decision (fsync) before committing, so a
-        // crash here is recoverable (the restart sweep re-sends the commits).
-        txnlog.write(txnId, resp("txn_id", txnId, "status", "committing",
-                "participants", participants, "commit_ts", commitTs));
-        events.emit("txn", "2PC " + txnId + ": all " + prepared.size() + " shards voted YES → durably"
-                + " recorded the COMMIT decision (fsync) → phase 2: COMMIT on every participant");
-        for (String[] ls : prepared) call(ls[0], "shard_commit", resp("shard", ls[1], "txn_id", txnId));
-        txnlog.remove(txnId);
-        return resp("ok", true, "commit_ts", commitTs, "txn_id", txnId,
+        // crash here — or a participant down right now — is recoverable by the sweep.
+        events.emit("txn", "2PC " + txnId + ": all " + participants.size() + " shards voted YES → "
+                + "durably recorded the COMMIT decision (fsync) → phase 2: COMMIT on every participant");
+        Map<String, Object> rec = txnWrite(txnId, "committing", participants, commitTs);
+        Map<String, Object> result = resp("ok", true, "commit_ts", commitTs, "txn_id", txnId,
                 "shards", new ArrayList<Object>(groups.keySet()));
+        if (!driveTxn(rec)) result.put("pending_recovery", true);
+        return result;
     }
 
-    private void abortAll(List<String[]> prepared, String txnId) {
-        for (String[] ls : prepared) call(ls[0], "shard_abort", resp("shard", ls[1], "txn_id", txnId));
+    private Map<String, Object> txnWrite(String txnId, String status, List<Object> participants, long commitTs) {
+        Map<String, Object> rec = resp("txn_id", txnId, "status", status, "participants", participants,
+                "commit_ts", commitTs, "ts", System.currentTimeMillis() / 1000.0);
+        txnlog.write(txnId, rec);
+        return rec;
+    }
+
+    /** Send commit/abort to each participant's CURRENT leader (re-resolved, since leadership may
+     * have moved — the intent is replicated so the new leader has it); remove once all ack. */
+    @SuppressWarnings("unchecked")
+    private boolean driveTxn(Map<String, Object> rec) {
+        String method = "committing".equals(rec.get("status")) ? "shard_commit" : "shard_abort";
+        String txnId = (String) rec.get("txn_id");
+        boolean allOk = true;
+        for (Object po : (List<Object>) rec.get("participants")) {
+            List<Object> ls = (List<Object>) po;
+            String shard = (String) ls.get(1);
+            String leader = leaderOf(shard, 1);
+            if (leader == null) leader = (String) ls.get(0);
+            if (!Boolean.TRUE.equals(call(leader, method, resp("shard", shard, "txn_id", txnId)).get("ok"))) {
+                allOk = false;
+            }
+        }
+        if (allOk) txnlog.remove(txnId);
+        return allOk;
     }
 
     private Map<String, Object> onStatus(Map<String, Object> p) {

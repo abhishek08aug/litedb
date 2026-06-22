@@ -67,6 +67,7 @@ public final class RaftGroup {
     // volatile state
     private long commitIndex = 0;
     private long lastApplied = 0;
+    private long lastAppliedTerm = 0;  // term of the most-recently-applied entry (for readiness)
     private Role role = Role.FOLLOWER;
     private volatile String leaderId = null;
     private final Set<String> votesReceived = ConcurrentHashMap.newKeySet();
@@ -213,6 +214,11 @@ public final class RaftGroup {
         try { return role == Role.LEADER; } finally { lock.unlock(); }
     }
 
+    public boolean isReady() {
+        lock.lock();
+        try { return role == Role.LEADER && lastAppliedTerm == currentTerm; } finally { lock.unlock(); }
+    }
+
     public String leaderId() { return leaderId; }
 
     // ---- role transitions -------------------------------------------------
@@ -235,8 +241,19 @@ public final class RaftGroup {
             nextIndex.put(p, nxt);
             matchIndex.put(p, 0L);
         }
+        // Commit a no-op in this term so inherited committed entries (incl. prepared intents) get
+        // applied (Raft commit-point rule). Until it applies, the leader is NOT ready. Appended
+        // directly — we already hold the lock; propose() would re-enter it.
+        Map<String, Object> noop = new LinkedHashMap<>();
+        noop.put("term", currentTerm);
+        noop.put("index", (long) (log.size() + 1));
+        Map<String, Object> cmd = new LinkedHashMap<>();
+        cmd.put("op", "noop");
+        noop.put("command", cmd);
+        log.add(noop);
+        appendLogPersist(noop);
         events.emit("leader", groupId + ": won a majority of votes → I am now the LEADER for term "
-                + currentTerm + "; I will serve writes for this shard");
+                + currentTerm + "; committing a no-op to become ready");
     }
 
     private int majority() {
@@ -493,6 +510,7 @@ public final class RaftGroup {
         while (lastApplied < commitIndex) {
             lastApplied += 1;
             Map<String, Object> entry = log.get((int) lastApplied - 1);
+            lastAppliedTerm = num(entry, "term");
             Map<String, Object> command = (Map<String, Object>) entry.get("command");
             stateMachine.apply(num(entry, "index"), command);
             events.emit("apply", groupId + ": entry idx " + num(entry, "index")
@@ -558,6 +576,7 @@ public final class RaftGroup {
         lock.lock();
         try {
             return resp("group", groupId, "node", nodeId, "role", role.name().toLowerCase(),
+                    "ready", role == Role.LEADER && lastAppliedTerm == currentTerm,
                     "term", currentTerm, "leader", leaderId, "log_len", (long) log.size(),
                     "commit_index", commitIndex, "last_applied", lastApplied);
         } finally {

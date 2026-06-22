@@ -5,17 +5,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * ShardReplica — one node's replica of one shard: a {@link RaftGroup} bound to a {@link ShardStore},
- * plus the leader-side transactional commit path (conflict-check → assign HLC commit timestamp →
- * propose through Raft → wait for majority). For cross-shard transactions the 2PC coordinator drives
- * prepare/commit across several of these.
- *
- * The 2PC lock is a {@link Semaphore} (not a ReentrantLock) because prepare and commit arrive on
- * different RPC threads, and a semaphore permit may be released by a thread other than the acquirer.
+ * plus the leader-side transactional commit path. 2PC PREPARE/COMMIT/ABORT are replicated through
+ * Raft as intent entries, so a prepared intent survives a leadership change (any new leader has it)
+ * — the participant-recovery property. The in-process lock just serializes the check+propose section.
  */
 public final class ShardReplica {
 
@@ -24,8 +20,7 @@ public final class ShardReplica {
     private final Hlc hlc;
     public final ShardStore store;
     public final RaftGroup raft;
-    private final Semaphore commitLock = new Semaphore(1, true);
-    private final Map<String, Object[]> prepared = new ConcurrentHashMap<>();  // txnId -> [commitTs, writes]
+    private final ReentrantLock lock = new ReentrantLock();
 
     public ShardReplica(String nodeId, String shardId, List<String> peers, RaftGroup.Transport transport,
                         String dataDir, Hlc hlc, boolean preferred, RaftGroup.Events events) throws IOException {
@@ -41,18 +36,20 @@ public final class ShardReplica {
     public void start() { raft.start(); }
     public void stop() { raft.stop(); store.close(); }
     public boolean isLeader() { return raft.isLeader(); }
+    public boolean isReady() { return raft.isReady(); }
     public String leaderId() { return raft.leaderId(); }
     public long snapshotTs() { return store.snapshotTs(); }
 
     // ---- single-shard transactional write ---------------------------------
 
     public Map<String, Object> commitWrite(Map<String, Object> writes, Long readTs, long timeoutMs) {
-        commitLock.acquireUninterruptibly();
+        lock.lock();
         try {
             if (!raft.isLeader()) return err("not_leader", "leader", raft.leaderId());
+            if (!raft.isReady()) return err("not_ready");
             long rts = readTs != null ? readTs : store.snapshotTs();
-            String conflict = checkConflicts(writes, rts);
-            if (conflict != null) return err("conflict", "key", conflict);
+            Map<String, Object> conflict = checkConflicts(writes, rts, "");
+            if (conflict != null) return conflict;
             long commitTs = readTs != null ? hlc.update(rts) : hlc.now();
             Long index = raft.propose(buildCommand(commitTs, writes));
             if (index == null) return err("not_leader");
@@ -62,55 +59,61 @@ public final class ShardReplica {
             r.put("commit_ts", commitTs);
             return r;
         } finally {
-            commitLock.release();
+            lock.unlock();
         }
     }
 
-    private String checkConflicts(Map<String, Object> writes, long readTs) {
+    /** A write conflicts if a newer committed version exists (OCC) or a key is locked by another
+     * prepared 2PC intent. Returns an error map, or null if clear. */
+    private Map<String, Object> checkConflicts(Map<String, Object> writes, long readTs, String txnId) {
         for (String key : writes.keySet()) {
-            if (store.newestCommittedTs(key) > readTs) return key;
+            if (store.newestCommittedTs(key) > readTs) return err("conflict", "key", key);
+            String locker = store.intentLocking(key, txnId);
+            if (locker != null) return err("locked", "key", key, "by", locker);
         }
         return null;
     }
 
-    // ---- 2PC participant side ---------------------------------------------
+    // ---- 2PC participant side (intents replicated through Raft) ------------
 
-    public Map<String, Object> prepare(String txnId, Map<String, Object> writes, long readTs, long commitTs) {
-        commitLock.acquireUninterruptibly();
-        boolean release = true;
+    public Map<String, Object> prepare(String txnId, Map<String, Object> writes, long readTs,
+                                       long commitTs, String coordinator) {
+        lock.lock();
         try {
             if (!raft.isLeader()) return err("not_leader", "leader", raft.leaderId());
-            String conflict = checkConflicts(writes, readTs);
-            if (conflict != null) return err("conflict", "key", conflict);
-            prepared.put(txnId, new Object[]{commitTs, writes});
-            release = false;  // hold the permit until commit/abort
-            return ok();
+            if (!raft.isReady()) return err("not_ready");
+            Map<String, Object> conflict = checkConflicts(writes, readTs, txnId);
+            if (conflict != null) return conflict;
+            Map<String, Object> cmd = new LinkedHashMap<>();
+            cmd.put("op", "prepare");
+            cmd.put("txn_id", txnId);
+            cmd.put("commit_ts", commitTs);
+            cmd.put("writes", writesList(writes));
+            Long index = raft.propose(cmd);
+            if (index == null) return err("not_leader");
+            return raft.waitCommit(index, 3000) ? ok() : err("timeout");
         } finally {
-            if (release) commitLock.release();
+            lock.unlock();
         }
     }
 
-    @SuppressWarnings("unchecked")
     public Map<String, Object> commitPrepared(String txnId, long timeoutMs) {
-        Object[] staged = prepared.remove(txnId);
-        if (staged == null) return err("unknown_txn");
-        try {
-            long commitTs = (Long) staged[0];
-            Map<String, Object> writes = (Map<String, Object>) staged[1];
-            Long index = raft.propose(buildCommand(commitTs, writes));
-            if (index == null) return err("not_leader");
-            boolean ok = raft.waitCommit(index, timeoutMs);
-            return ok ? ok() : err("timeout");
-        } finally {
-            commitLock.release();
-        }
+        Long index = raft.propose(txnOp("commit", txnId));
+        if (index == null) return err("not_leader");
+        return raft.waitCommit(index, timeoutMs) ? ok() : err("timeout");
     }
 
     public Map<String, Object> abortPrepared(String txnId) {
-        if (prepared.remove(txnId) != null) {
-            commitLock.release();
-        }
-        return ok();
+        Long index = raft.propose(txnOp("abort", txnId));
+        if (index == null) return err("not_leader");
+        return raft.waitCommit(index, 3000) ? ok() : err("timeout");
+    }
+
+    private static Map<String, Object> txnOp(String op, String txnId) {
+        Map<String, Object> cmd = new LinkedHashMap<>();
+        cmd.put("op", op);
+        cmd.put("txn_id", txnId);
+        return cmd;
     }
 
     // ---- reads ------------------------------------------------------------
@@ -127,7 +130,7 @@ public final class ShardReplica {
 
     // ---- helpers ----------------------------------------------------------
 
-    private static Map<String, Object> buildCommand(long commitTs, Map<String, Object> writes) {
+    private static List<Object> writesList(Map<String, Object> writes) {
         List<Object> ws = new ArrayList<>();
         for (Map.Entry<String, Object> e : writes.entrySet()) {
             List<Object> kv = new ArrayList<>();
@@ -135,9 +138,13 @@ public final class ShardReplica {
             kv.add(e.getValue());  // null encodes a delete
             ws.add(kv);
         }
+        return ws;
+    }
+
+    private static Map<String, Object> buildCommand(long commitTs, Map<String, Object> writes) {
         Map<String, Object> cmd = new LinkedHashMap<>();
         cmd.put("ts", commitTs);
-        cmd.put("writes", ws);
+        cmd.put("writes", writesList(writes));
         return cmd;
     }
 

@@ -72,6 +72,7 @@ class RaftGroup:
         # Volatile state
         self.commit_index = 0
         self.last_applied = 0
+        self._last_applied_term = 0  # term of the most-recently-applied entry (for readiness)
         self.role = Role.FOLLOWER
         self.leader_id: Optional[str] = None
         self.votes_received: set[str] = set()
@@ -174,8 +175,16 @@ class RaftGroup:
         for p in self.peers:
             self.next_index[p] = nxt
             self.match_index[p] = 0
+        # Commit a no-op in this term so all entries inherited from prior terms get applied (Raft's
+        # commit-point rule). Until this applies, the leader is NOT ready to serve conflict-checked
+        # writes — otherwise it could miss a prepared intent it hasn't applied yet. Appended directly
+        # (we already hold the lock; propose() would re-enter it).
+        idx = len(self.log) + 1
+        entry = {"term": self.current_term, "index": idx, "command": {"op": "noop"}}
+        self.log.append(entry)
+        self._append_log_persist(entry)
         self._emit("leader", f"{self.group_id}: won a majority of votes → I am now the LEADER "
-                             f"for term {self.current_term}; I will serve writes for this shard")
+                             f"for term {self.current_term}; committing a no-op to become ready")
 
     # ------------------------------------------------------------------ #
     #  Election                                                            #
@@ -377,6 +386,7 @@ class RaftGroup:
         while self.last_applied < self.commit_index:
             self.last_applied += 1
             entry = self.log[self.last_applied - 1]
+            self._last_applied_term = entry["term"]
             self._apply(entry["index"], entry["command"])
             self._emit("apply", f"{self.group_id}: entry idx {entry['index']} reached a majority → "
                                 f"COMMITTED; applied to the storage engine "
@@ -420,12 +430,20 @@ class RaftGroup:
         with self._lock:
             return self.role == Role.LEADER
 
+    def is_ready(self) -> bool:
+        """A leader is ready to serve conflict-checked writes only once it has applied an entry from
+        its own term (its election no-op) — guaranteeing it has applied all inherited committed
+        entries, including any prepared intents."""
+        with self._lock:
+            return self.role == Role.LEADER and self._last_applied_term == self.current_term
+
     def status(self) -> dict:
         with self._lock:
             return {
                 "group": self.group_id,
                 "node": self.node_id,
                 "role": self.role.value,
+                "ready": self.role == Role.LEADER and self._last_applied_term == self.current_term,
                 "term": self.current_term,
                 "leader": self.leader_id,
                 "log_len": len(self.log),

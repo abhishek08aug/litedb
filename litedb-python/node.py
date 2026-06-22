@@ -31,6 +31,8 @@ from shard_replica import ShardReplica
 from txn_log import TxnLog
 
 FORWARD_TIMEOUT = 3.0
+SWEEP_INTERVAL = 2.0    # how often the coordinator re-drives in-doubt transactions
+PREPARE_TIMEOUT = 10.0  # a txn stuck 'preparing' this long → the coordinator died mid-prepare → abort
 
 
 class NodeServer:
@@ -71,7 +73,8 @@ class NodeServer:
                 p, lambda r: r.commit_write(p["writes"], p.get("read_ts"))),
             "shard_get": self._on_shard_get,
             "shard_prepare": lambda p: self._with_shard(
-                p, lambda r: r.prepare(p["txn_id"], p["writes"], p["read_ts"], p["commit_ts"])),
+                p, lambda r: r.prepare(p["txn_id"], p["writes"], p["read_ts"], p["commit_ts"],
+                                       p.get("coordinator"))),
             "shard_commit": lambda p: self._with_shard(p, lambda r: r.commit_prepared(p["txn_id"])),
             "shard_abort": lambda p: self._with_shard(p, lambda r: r.abort_prepared(p["txn_id"])),
         }
@@ -89,21 +92,39 @@ class NodeServer:
         self.server.start()
         for rep in self.shards.values():
             rep.start()
-        threading.Thread(target=self._recovery_loop, daemon=True).start()
+        threading.Thread(target=self._sweep_loop, daemon=True).start()
 
-    def _recovery_loop(self) -> None:
-        """On restart, finish any 2PC this node was coordinating when it died."""
-        time.sleep(2.0)  # let the RPC server + peers come up and elect leaders
+    def _sweep_loop(self) -> None:
+        """Drives in-doubt 2PC to completion. On restart it (a) re-stages any txns this node had
+        prepared as a participant — re-acquiring their locks — and (b) re-drives any txns this node
+        was coordinating. Then it keeps re-driving periodically so a participant that was down during
+        commit/abort gets resolved when it returns."""
+        time.sleep(1.5)  # let the RPC server + peers come up and elect leaders
+        # Prepared intents are replicated through each shard's Raft log, so a restarted replica (or a
+        # new leader after a leadership change) rebuilds them automatically — no participant-side
+        # recovery step is needed here. This loop drives the COORDINATOR side to completion.
+        while True:
+            try:
+                self._sweep_once()
+            except Exception as e:
+                self.events.emit("txn", f"sweep error: {e}")
+            time.sleep(SWEEP_INTERVAL)
+
+    def _sweep_once(self) -> None:
         for rec in self.txnlog.pending():
-            txn_id = rec["txn_id"]
-            commit = rec["status"] == "committing"
-            verb = "COMMIT" if commit else "ABORT"
-            self.events.emit("txn", f"RECOVERY: in-doubt txn {txn_id} was '{rec['status']}' when I "
-                                    f"crashed → resolving as {verb} on restart")
-            for leader, shard in rec["participants"]:
-                self._call(leader, "shard_commit" if commit else "shard_abort",
-                           {"shard": shard, "txn_id": txn_id})
-            self.txnlog.remove(txn_id)
+            status = rec["status"]
+            if status == "preparing":
+                # A live coordinator advances 'preparing' to committing/aborted in milliseconds; if
+                # it's still 'preparing' past the timeout, the coordinator crashed mid-prepare → abort.
+                if time.time() - rec.get("ts", 0) > PREPARE_TIMEOUT:
+                    self.events.emit("txn", f"RECOVERY: txn {rec['txn_id']} stuck 'preparing' past "
+                                            f"timeout → deciding ABORT")
+                    self._drive_txn(self._txn_write(rec["txn_id"], "aborted",
+                                                    rec["participants"], rec["commit_ts"]))
+            else:  # committing | aborted — re-drive until every participant has acked
+                self.events.emit("txn", f"RECOVERY: re-driving {status} txn {rec['txn_id']} "
+                                        f"(a participant had not acked)")
+                self._drive_txn(rec)
 
     def stop(self) -> None:
         for rep in self.shards.values():
@@ -138,6 +159,17 @@ class NodeServer:
         if rep is None:
             return {"ok": False, "error": "not_hosted"}
         return {"ok": True, "leader": rep.leader_id()}
+
+    def _call_ready(self, node: str, method: str, payload: dict, retries: int = 25) -> dict:
+        """Like _call, but transparently retries while a just-elected leader is not yet ready to
+        serve conflict-checked writes (it's committing its no-op)."""
+        res = self._call(node, method, payload)
+        for _ in range(retries):
+            if res.get("error") != "not_ready":
+                return res
+            time.sleep(0.1)
+            res = self._call(node, method, payload)
+        return res
 
     def _leader_of(self, shard: str, retries: int = 15) -> Optional[str]:
         """Resolve a shard's leader whether or not THIS node hosts the shard. If it does, read the
@@ -190,7 +222,8 @@ class NodeServer:
         self.events.emit("routing", f"GET {key} → maps to {shard} (consistent hashing); {relation}, "
                                     f"so I resolved its leader = {leader} and forward the read there "
                                     f"(leader read = linearizable)")
-        return self._call(leader, "shard_get", {"shard": shard, "key": key, "read_ts": p.get("read_ts")})
+        return self._call_ready(leader, "shard_get",
+                                {"shard": shard, "key": key, "read_ts": p.get("read_ts")})
 
     def _on_shard_get(self, p: dict) -> dict:
         rep = self.shards.get(p["shard"])
@@ -221,7 +254,7 @@ class NodeServer:
                 self.events.emit("routing", f"WRITE [{keys}] → all in {shard} (consistent hashing); "
                                             f"{relation}, so I resolved its leader = {leader} → "
                                             f"forwarding the write there")
-            res = self._call(leader, "shard_write", {"shard": shard, "writes": w, "read_ts": read_ts})
+            res = self._call_ready(leader, "shard_write", {"shard": shard, "writes": w, "read_ts": read_ts})
             res.setdefault("shards", [shard])
             return res
 
@@ -247,40 +280,55 @@ class NodeServer:
             if not leader:
                 return {"ok": False, "error": "no_leader", "shard": shard}
             participants.append([leader, shard])
-        self.txnlog.write(txn_id, {"txn_id": txn_id, "status": "preparing",
-                                   "participants": participants, "commit_ts": commit_ts})
+        self._txn_write(txn_id, "preparing", participants, commit_ts)
 
-        prepared: list[tuple[str, str]] = []
         for leader, shard in participants:
             self.events.emit("txn", f"2PC {txn_id}: PREPARE {shard} on leader {leader} "
-                                    f"(validate no conflict + stage writes, holding a lock)")
-            res = self._call(leader, "shard_prepare", {
+                                    f"(validate no conflict + stage writes durably, holding a lock)")
+            res = self._call_ready(leader, "shard_prepare", {
                 "shard": shard, "txn_id": txn_id, "writes": groups[shard],
-                "read_ts": read_ts, "commit_ts": commit_ts,
+                "read_ts": read_ts, "commit_ts": commit_ts, "coordinator": self.node_id,
             })
             if not res.get("ok"):
                 self.events.emit("txn", f"2PC {txn_id}: {shard} voted NO ({res.get('error')}) → "
-                                        f"ABORTING the whole transaction (atomicity)")
-                self._abort_all(prepared, txn_id)
-                self.txnlog.remove(txn_id)
+                                        f"deciding ABORT for the whole transaction (atomicity)")
+                # record the ABORT decision durably and drive it (the sweep retries any that fail)
+                self._drive_txn(self._txn_write(txn_id, "aborted", participants, commit_ts))
                 return {"ok": False, "error": "prepare_failed", "shard": shard, "detail": res}
-            prepared.append((leader, shard))
 
-        # COMMIT POINT: all voted YES → durably record the decision BEFORE committing, so a crash
-        # here is recoverable (the restart sweep will re-send the commits).
-        self.txnlog.write(txn_id, {"txn_id": txn_id, "status": "committing",
-                                   "participants": participants, "commit_ts": commit_ts})
-        self.events.emit("txn", f"2PC {txn_id}: all {len(prepared)} shards voted YES → durably "
+        # COMMIT POINT: all voted YES → durably record the decision (fsync) BEFORE committing, so a
+        # crash here — or a participant that's down right now — is recoverable by the sweep.
+        self.events.emit("txn", f"2PC {txn_id}: all {len(participants)} shards voted YES → durably "
                                 f"recorded the COMMIT decision (fsync) → phase 2: COMMIT on every "
                                 f"participant (each via its own Raft group)")
-        for leader, shard in prepared:
-            self._call(leader, "shard_commit", {"shard": shard, "txn_id": txn_id})
-        self.txnlog.remove(txn_id)
-        return {"ok": True, "commit_ts": commit_ts, "txn_id": txn_id, "shards": list(groups.keys())}
+        rec = self._txn_write(txn_id, "committing", participants, commit_ts)
+        if self._drive_txn(rec):
+            return {"ok": True, "commit_ts": commit_ts, "txn_id": txn_id, "shards": list(groups)}
+        # a participant was unreachable; it's durably committing and the sweep will finish it
+        return {"ok": True, "commit_ts": commit_ts, "txn_id": txn_id, "shards": list(groups),
+                "pending_recovery": True}
 
-    def _abort_all(self, prepared: list[tuple[str, str]], txn_id: str) -> None:
-        for leader, shard in prepared:
-            self._call(leader, "shard_abort", {"shard": shard, "txn_id": txn_id})
+    def _txn_write(self, txn_id: str, status: str, participants: list, commit_ts: int) -> dict:
+        rec = {"txn_id": txn_id, "status": status, "participants": participants,
+               "commit_ts": commit_ts, "ts": time.time()}
+        self.txnlog.write(txn_id, rec)
+        return rec
+
+    def _drive_txn(self, rec: dict) -> bool:
+        """Send the decision (commit/abort) to every participant; remove the record once all ack.
+        Idempotent: re-sending to an already-resolved participant is a no-op. Returns True if fully
+        resolved."""
+        method = "shard_commit" if rec["status"] == "committing" else "shard_abort"
+        all_ok = True
+        for recorded_leader, shard in rec["participants"]:
+            # Re-resolve the CURRENT leader: leadership may have moved since prepare. The intent is
+            # replicated, so the new leader has it and can apply the commit/abort.
+            leader = self._leader_of(shard, retries=1) or recorded_leader
+            if not self._call(leader, method, {"shard": shard, "txn_id": rec["txn_id"]}).get("ok"):
+                all_ok = False
+        if all_ok:
+            self.txnlog.remove(rec["txn_id"])
+        return all_ok
 
     # ------------------------------------------------------------------ #
     #  Status (dashboard)                                                  #

@@ -20,8 +20,11 @@ import os
 
 
 class TxnLog:
-    def __init__(self, data_dir: str):
-        self.dir = os.path.join(data_dir, "txnlog")
+    """A directory of durable JSON records keyed by id (fsync'd, atomic replace). Used by the
+    coordinator (`txnlog`) and by each shard participant (`shard-<id>-prepared`)."""
+
+    def __init__(self, data_dir: str, subdir: str = "txnlog"):
+        self.dir = os.path.join(data_dir, subdir)
         os.makedirs(self.dir, exist_ok=True)
 
     def _path(self, txn_id: str) -> str:

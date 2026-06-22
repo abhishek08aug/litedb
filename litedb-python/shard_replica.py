@@ -35,9 +35,9 @@ class ShardReplica:
             data_dir=os.path.join(data_dir, f"shard-{shard_id}-raft"),
             preferred=preferred, on_event=on_event,
         )
-        self._commit_lock = threading.Lock()
-        # staged 2PC writes: txn_id -> (commit_ts, writes_dict)
-        self._prepared: dict[str, tuple[int, dict]] = {}
+        # serialize the check+propose decision section per shard (the durable, cross-operation
+        # "lock" on keys is the replicated intent itself, not this in-process lock).
+        self._lock = threading.Lock()
 
     def start(self) -> None:
         self.raft.start()
@@ -48,6 +48,9 @@ class ShardReplica:
 
     def is_leader(self) -> bool:
         return self.raft.is_leader()
+
+    def is_ready(self) -> bool:
+        return self.raft.is_ready()
 
     def leader_id(self) -> Optional[str]:
         return self.raft.leader_id
@@ -60,13 +63,15 @@ class ShardReplica:
     def commit_write(self, writes: dict, read_ts: Optional[int] = None,
                      timeout: float = 3.0) -> dict:
         """writes: {user_key: value_or_None}. Returns {"ok": bool, ...}."""
-        with self._commit_lock:
+        with self._lock:
             if not self.raft.is_leader():
                 return {"ok": False, "error": "not_leader", "leader": self.raft.leader_id}
+            if not self.raft.is_ready():
+                return {"ok": False, "error": "not_ready"}
             rts = read_ts if read_ts is not None else self.store.snapshot_ts()
-            conflict = self._check_conflicts(writes, rts)
+            conflict = self._check_conflicts(writes, rts, txn_id="")
             if conflict is not None:
-                return {"ok": False, "error": "conflict", "key": conflict}
+                return {"ok": False, **conflict}
             # commit must be newer than the snapshot it was validated against
             commit_ts = self.hlc.update(rts) if read_ts is not None else self.hlc.now()
             index = self.raft.propose({"ts": commit_ts,
@@ -76,57 +81,54 @@ class ShardReplica:
             ok = self.raft.wait_commit(index, timeout=timeout)
             return {"ok": ok, "commit_ts": commit_ts} if ok else {"ok": False, "error": "timeout"}
 
-    def _check_conflicts(self, writes: dict, read_ts: int) -> Optional[str]:
+    def _check_conflicts(self, writes: dict, read_ts: int, txn_id: str) -> Optional[dict]:
+        """A write conflicts if a newer committed version exists (OCC) or a key is locked by another
+        prepared 2PC intent."""
         for key in writes:
             if self.store.newest_committed_ts(key) > read_ts:
-                return key
+                return {"error": "conflict", "key": key}
+            locker = self.store.intent_locking(key, exclude_txn=txn_id)
+            if locker is not None:
+                return {"error": "locked", "key": key, "by": locker}
         return None
 
     # ---- 2PC participant side (driven by the coordinator) ----------------
 
-    def prepare(self, txn_id: str, writes: dict, read_ts: int, commit_ts: int) -> dict:
-        """Validate conflicts and stage writes. Holds the commit lock for the txn until
-        commit/abort so a concurrent write can't slip in between check and apply."""
-        self._commit_lock.acquire()
-        try:
+    def prepare(self, txn_id: str, writes: dict, read_ts: int, commit_ts: int,
+                coordinator: Optional[str] = None) -> dict:
+        """Phase 1: conflict-check, then replicate a PREPARE intent through Raft. Once the intent is
+        committed to a majority it is durable AND survives a leadership change (any new leader has
+        it in its log), so the vote can't be lost — the participant-recovery property."""
+        with self._lock:
             if not self.raft.is_leader():
-                self._commit_lock.release()
                 return {"ok": False, "error": "not_leader", "leader": self.raft.leader_id}
-            conflict = self._check_conflicts(writes, read_ts)
+            if not self.raft.is_ready():
+                return {"ok": False, "error": "not_ready"}
+            conflict = self._check_conflicts(writes, read_ts, txn_id=txn_id)
             if conflict is not None:
-                self._commit_lock.release()
-                return {"ok": False, "error": "conflict", "key": conflict}
-            self._prepared[txn_id] = (commit_ts, writes)
-            return {"ok": True}
-        except Exception:
-            self._commit_lock.release()
-            raise
-
-    def commit_prepared(self, txn_id: str, timeout: float = 3.0) -> dict:
-        staged = self._prepared.pop(txn_id, None)
-        if staged is None:
-            return {"ok": False, "error": "unknown_txn"}
-        commit_ts, writes = staged
-        try:
-            index = self.raft.propose({"ts": commit_ts,
+                return {"ok": False, **conflict}
+            index = self.raft.propose({"op": "prepare", "txn_id": txn_id, "commit_ts": commit_ts,
                                        "writes": [[k, v] for k, v in writes.items()]})
             if index is None:
                 return {"ok": False, "error": "not_leader"}
-            ok = self.raft.wait_commit(index, timeout=timeout)
-            return {"ok": ok} if ok else {"ok": False, "error": "timeout"}
-        finally:
-            self._release_if_held()
+            ok = self.raft.wait_commit(index, timeout=3.0)  # hold lock until the intent is applied
+            return {"ok": True} if ok else {"ok": False, "error": "timeout"}
 
-    def abort_prepared(self, txn_id: str) -> dict:
-        self._prepared.pop(txn_id, None)
-        self._release_if_held()
-        return {"ok": True}
+    def commit_prepared(self, txn_id: str, timeout: float = 3.0) -> dict:
+        """Phase 2 (commit): replicate a COMMIT entry; apply turns the intent's writes into committed
+        versions. Idempotent — committing an already-resolved txn is a no-op on apply."""
+        index = self.raft.propose({"op": "commit", "txn_id": txn_id})
+        if index is None:
+            return {"ok": False, "error": "not_leader"}
+        ok = self.raft.wait_commit(index, timeout=timeout)
+        return {"ok": True} if ok else {"ok": False, "error": "timeout"}
 
-    def _release_if_held(self) -> None:
-        try:
-            self._commit_lock.release()
-        except RuntimeError:
-            pass  # not held
+    def abort_prepared(self, txn_id: str, timeout: float = 3.0) -> dict:
+        index = self.raft.propose({"op": "abort", "txn_id": txn_id})
+        if index is None:
+            return {"ok": False, "error": "not_leader"}
+        ok = self.raft.wait_commit(index, timeout=timeout)
+        return {"ok": True} if ok else {"ok": False, "error": "timeout"}
 
     # ---- reads ------------------------------------------------------------
 

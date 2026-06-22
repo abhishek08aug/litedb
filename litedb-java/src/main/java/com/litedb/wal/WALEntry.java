@@ -57,7 +57,13 @@ public class WALEntry {
     }
 
     private static String extractRawField(String json, String name) {
-        return extractField(json, name);
+        // "val" is always the LAST field, and its (escaped) string can itself contain commas or
+        // braces — so read to the entry's final '}', not the first ',' (which extractField uses).
+        String search = "\"" + name + "\":";
+        int start = json.indexOf(search);
+        if (start < 0) throw new IllegalArgumentException("Field not found: " + name);
+        start += search.length();
+        return json.substring(start, json.lastIndexOf('}')).trim();
     }
 
     private static String extractStringField(String json, String name) {

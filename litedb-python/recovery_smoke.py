@@ -32,7 +32,7 @@ def leaders(client):
     m = {}
     for st in client.status():
         for sh in st.get("shards", []):
-            if sh["role"] == "leader":
+            if sh["role"] == "leader" and sh.get("ready"):
                 m[sh["group"]] = sh["node"]
     return m
 
