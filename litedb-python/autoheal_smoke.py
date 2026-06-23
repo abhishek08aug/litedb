@@ -77,10 +77,10 @@ def main():
         assert all(client.get(f"key{i}") == f"val{i}" for i in range(12))
         print("  wrote + read 12 keys")
 
-        # Turn on auto-heal, then kill a node WITHOUT telling the controller.
-        ctrl.start_failure_detector(interval=1.0, reap_after=3.0)
-        victim = INITIAL_NODES[0]
-        print(f"\nkilling {victim} — NO manual controller call; the failure detector must notice")
+        # The PD leader runs the failure detector autonomously — nothing to start. Kill a non-PD data
+        # node (a clean data-node death; killing a PD member is covered by pd_failover_smoke).
+        victim = INITIAL_NODES[-1]
+        print(f"\nkilling {victim} — NO manual controller call; the PD failure detector must notice")
         procs[victim].kill()
         procs[victim].wait()
 

@@ -45,17 +45,22 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
 - **Live failover** (RF ≥ 3) — kill an instance, its shards re-elect on survivors, data intact
 - **Dynamic membership + online rebalancing** — **Raft configuration changes** (voter set carried in
   the log, one server changed at a time so majorities overlap; a removed leader steps down only after
-  the change commits) + a **control plane** (`controller.py` / `Controller.java`): add a node and
-  shards (with their data) rebalance onto it via Raft catch-up; remove a node and its shards
-  re-replicate to restore RF — online, data intact
+  the change commits) + a **control plane** (`pd.py` / `Pd.java`): add a node and shards (with their
+  data) rebalance onto it via Raft catch-up; remove a node and its shards re-replicate to restore RF —
+  online, data intact
 - **Gossip-based discovery** — nodes join from a small **seed** set (not a static full list) and learn
   the whole cluster via **SWIM/Cassandra-style gossip** (`gossip.py` / `Gossip.java`); weak liveness
   (alive/suspect/dead) is derived locally from heartbeat freshness, so the static address book is now
   just a bootstrap seed source, not the source of truth
-- **Auto-heal on node death** — the controller runs a **failure detector** (`start_failure_detector`)
-  that reads gossip liveness and, when a node is confirmed DEAD by a majority of its live peers past a
-  grace window, **automatically re-replicates its shards to restore RF** — no operator action. Closes
-  the loop from detection to healing (`autoheal_smoke.py` / `AutoHealSmoke.java`)
+- **Control plane is its OWN Raft group (PD)** — the placement driver (`pd.py` / `Pd.java`, the TiKV PD
+  model) is co-located on `PD_NODES`; membership decisions are committed to its Raft log and the PD
+  leader runs reconcile + failure detection. Kill the PD leader and a surviving replica takes over and
+  resumes from the durable log — a half-finished rebalance is completed, not lost. The control plane is
+  **no longer a SPOF** (`pd_failover_smoke.py` / `PdFailoverSmoke.java`); `controller.py` is now a thin client
+- **Auto-heal on node death** — the **PD leader** runs a gossip-fed **failure detector**; when a node
+  is confirmed DEAD by a majority of its live peers past a grace window, it **proposes `remove_node`
+  through the PD Raft log** and reconcile re-replicates the shards to restore RF — no operator action,
+  and the healing survives a PD-leader crash (`autoheal_smoke.py` / `AutoHealSmoke.java`)
 - **Rich central dashboard** — health, config, consistent-hash ring, shard→node placement matrix,
   the live gossip membership matrix (what each node discovered + alive/suspect/dead),
   one event feed per instance + a merged system stream; kill/restart **and add/remove** nodes from the
@@ -64,8 +69,9 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
 **Run it:** `python dashboard.py` or `java com.litedb.cluster.Dashboard` → http://127.0.0.1:7080
 (Java: 7180). **Tests:** `pytest test_distributed.py`; `python cluster_smoke.py` /
 `recovery_smoke.py` / `participant_recovery_smoke.py` / `rebalance_smoke.py` / `gossip_smoke.py` /
-`autoheal_smoke.py`; Java `ClusterSmoke` / `ClusterRecoverySmoke` / `ClusterParticipantRecoverySmoke` /
-`ClusterRebalanceSmoke` / `GossipSmoke` / `AutoHealSmoke`. Set `LITEDB_CLUSTER_RF=2` for replication factor 2.
+`autoheal_smoke.py` / `pd_failover_smoke.py`; Java `ClusterSmoke` / `ClusterRecoverySmoke` /
+`ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke` / `GossipSmoke` / `AutoHealSmoke` /
+`PdFailoverSmoke`. Set `LITEDB_CLUSTER_RF=2` for replication factor 2.
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 
@@ -76,13 +82,14 @@ The remaining gap is no longer *integration* — it is **cross-machine hardening
 These are conscious shortcuts in the current build — each works for the demo and each is a real,
 named gap for production. Listed so the boundary is explicit, not hidden.
 
-- **The control plane (placement driver) is a single orchestrator — a SPOF for control operations,
-  not the data plane.** Membership changes and rebalancing are driven by one `Controller` that holds
-  the placement map in memory; if it dies mid-rebalance, a change can be left half-applied. Crucially
-  it is NOT in the data path — shards keep serving via their Raft groups — so a controller outage
-  means "can't rebalance," not "database down." Production replicates the controller as its own Raft
-  group (TiKV's PD) or decentralizes it (CockroachDB), persisting in-flight moves so a new controller
-  leader can finish them — the same durable-record + take-over pattern used here for 2PC recovery.
+- **The control plane is a replicated Raft group (PD), but its membership is fixed and co-located.**
+  The placement driver (`pd.py` / `Pd.java`) is its OWN Raft group on `PD_NODES`: decisions are durable
+  in its log and a new PD leader resumes a half-finished rebalance — so it is **no longer a SPOF** (the
+  TiKV PD model). The residual simplifications: the PD's voter set is a fixed co-located trio that
+  doesn't auto-shrink (kill a PD node and the PD group runs degraded until the trio is manually
+  reconfigured), the PD is co-located in data nodes rather than a separate tier, and reconcile is a
+  single-leader control loop (no sharded scheduler). Production also decentralizes placement entirely
+  (CockroachDB) or scales the PD out.
 - **Rebalancing is even-spread; no range split/merge.** The balancer assigns whole fixed shards
   round-robin; it has no capacity/load awareness, throttling, or range splitting as data grows.
 - **2PC recovery covers coordinator AND participant failure (single-machine).** The coordinator
@@ -112,8 +119,9 @@ named gap for production. Listed so the boundary is explicit, not hidden.
 - **Seed-based discovery, single-machine seeds.** Nodes discover each other via **gossip** from a
   small seed set (no static full list) and derive liveness locally; the gossip "dead" verdict now
   **auto-triggers re-replication** to restore RF. The remaining single-machine assumption is that the
-  seed addresses come from shared config — cross-machine you'd point seeds at stable DNS/IPs — and the
-  failure detector runs inside the single controller (so it inherits the control-plane SPOF below).
+  seed addresses come from shared config — cross-machine you'd point seeds at stable DNS/IPs. The
+  failure detector runs on the PD leader (replicated, not a SPOF), but proposes through the single PD
+  Raft group described above.
 - **Not adversarially tested.** No Jepsen / partition / fault-injection suite; correctness is shown
   by scripted scenarios, not proven under the full failure matrix.
 
@@ -139,7 +147,10 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 - [x] One Raft group **per shard** (multi-raft), leadership spread across nodes
 - [x] Route live KV operations to the owning shard's leader
 - [x] A placement driver / balancer (even-spread): add/remove a node → shards rebalance online, with
-      data moving via Raft catch-up; remove → re-replicate to restore RF (`controller.py` / `Controller.java`)
+      data moving via Raft catch-up; remove → re-replicate to restore RF (`pd.py` / `Pd.java`)
+- [x] **Placement driver replicated as its OWN Raft group** (TiKV PD model): decisions committed to the
+      PD log, reconcile + failure detection on the PD leader; survives a PD-leader crash, no SPOF
+- [ ] Auto-shrink/grow the PD's own voter set; separate PD tier; sharded (multi-leader) scheduler
 - [ ] Range split/merge as data grows/shrinks (shards are fixed today)
 - [ ] Capacity-/load-aware placement, hot-shard movement, throttled relocation (the balancer is naive)
 

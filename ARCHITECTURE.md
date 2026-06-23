@@ -182,7 +182,7 @@ cross-node snapshot isolation.)
   "ready"** to serve conflict-checked writes until it applies that no-op — guaranteeing it has
   applied every inherited intent first (Raft's commit-point rule).
 
-### Dynamic membership + rebalancing — [`controller.py`](litedb-python/controller.py)
+### Dynamic membership + rebalancing — [`pd.py`](litedb-python/pd.py)
 The cluster can grow and shrink online, with data moving. Two pieces:
 
 - **Raft configuration changes** ([`raft_node.py`](litedb-python/raft_node.py)) — a group's
@@ -191,25 +191,31 @@ The cluster can grow and shrink online, with data moving. Two pieces:
   and new majorities always overlap (Raft's safety condition). Quorum, elections, and commit all
   count the *current* voters; a leader removed from the config keeps leading until that change
   **commits**, then steps down (so the new config is durable first).
-- **A control plane** ([`controller.py`](litedb-python/controller.py), a simplified TiKV Placement
-  Driver) — holds the authoritative shard→node placement, computes an even target when the node set
-  changes, and applies the moves one membership change at a time: to add a replica it creates a
-  follower on the target node and adds it to the config — the node then **catches up via Raft**
-  (this *is* the data moving) — then drops the old replica. Adding a node rebalances shards onto it;
-  removing one re-replicates its shards to restore RF.
+- **A control plane that is itself a Raft group** ([`pd.py`](litedb-python/pd.py) /
+  [`Pd.java`](litedb-java/.../Pd.java), the TiKV PD model) — co-located on `PD_NODES`. Membership
+  *decisions* (`add_node` / `remove_node`) are **committed to the PD Raft log** (durable), and the PD
+  **leader** runs the orchestration: an idempotent **reconcile** loop that moves each shard toward
+  `compute_placement(active)` one membership change at a time — to add a replica it creates a follower
+  on the target node and adds it to the config (the node **catches up via Raft** — this *is* the data
+  moving), then drops the extra. Adding a node rebalances shards onto it; removing one re-replicates to
+  restore RF. [`controller.py`](litedb-python/controller.py) is now just a thin **client** of the PD.
 
-The control plane is a single orchestrator (a SPOF for *control* operations, not the data plane —
-shards keep serving through their Raft groups). Production replicates it (PD-as-Raft-group) or
-decentralizes it (CockroachDB); see [ROADMAP.md](ROADMAP.md).
+Because the decisions are in the PD log and reconcile is idempotent (it derives "current" from the
+live cluster), the control plane is **no longer a SPOF**: kill the PD leader and a surviving PD replica
+is elected and resumes reconciling from the durable log — a half-finished rebalance is *completed, not
+lost* (`pd_failover_smoke.py` / `PdFailoverSmoke.java`). Residual simplification: the PD's own voter set
+is a fixed co-located trio that doesn't auto-shrink, so it runs degraded if a PD node dies; see
+[ROADMAP.md](ROADMAP.md).
 
-**Auto-heal on death.** The controller also runs a gossip-fed **failure detector**
-(`start_failure_detector`): a reconcile loop that reads each node's gossip view via `status` and, when
-a node is reported DEAD by a **majority** of its live peers and stays dead past a grace window, fires
-`remove_node(dead=True)` — re-replicating its shards onto survivors to **restore RF, with no operator
-action**. The majority rule rejects one node's false suspicion; an "act only while a majority is alive"
-guard stops a partitioned minority from reaping the majority (and matches the fact that a Raft config
-change needs a quorum to commit anyway). So a node death self-heals end-to-end: failover keeps it
-available immediately, then gossip detection → reap → re-replication restores full redundancy.
+**Auto-heal on death.** The PD leader runs a gossip-fed **failure detector**: a loop that reads each
+node's gossip view via `status` and, when a node is reported DEAD by a **majority** of its live peers
+past a grace window, **proposes `remove_node(dead)` through the PD Raft log** (a durable decision) —
+then reconcile re-replicates its shards onto survivors to **restore RF, no operator action**. The
+majority rule rejects one node's false suspicion; an "act only while a majority is alive" guard stops a
+partitioned minority from reaping the majority (and matches the fact that a Raft config change needs a
+quorum to commit anyway). So a node death self-heals end-to-end: failover keeps it available
+immediately, then gossip detection → a durable PD decision → re-replication restores full redundancy —
+and that healing survives the PD leader itself dying.
 
 ### Watching it — [`events.py`](litedb-python/events.py) / [`dashboard.py`](litedb-python/dashboard.py)
 Each node emits a human-readable event for every meaningful action (election, accepting a leader,
@@ -239,10 +245,15 @@ follower catches up via Raft (the data moves) → the controller drops an old re
 mirror: add a replacement replica elsewhere to restore RF, then drop the departing one.
 
 **Node death (auto-heal)** — a node dies → its shards' Raft groups re-elect leaders on the survivors
-(immediate failover, data intact) → gossip ages the node to DEAD in its peers' views → the controller's
-failure detector sees the majority-dead verdict past the grace window → fires `remove_node(dead)` →
-the dead voter is dropped from each affected shard and a replacement replica is added on a survivor
-(catch-up via Raft) → RF restored, all with no operator action.
+(immediate failover, data intact) → gossip ages the node to DEAD in its peers' views → the PD leader's
+failure detector sees the majority-dead verdict past the grace window → **proposes `remove_node(dead)`
+to the PD Raft log** → reconcile drops the dead voter from each affected shard and adds a replacement on
+a survivor (catch-up via Raft) → RF restored, no operator action.
+
+**PD-leader crash** — the PD leader (which holds the placement decisions and runs reconcile) dies → the
+surviving PD replicas re-elect a new PD leader → it reads the durable decision log and keeps reconciling
+toward `compute_placement(active)` → any half-finished rebalance is completed and pending heals proceed.
+The control plane is not a SPOF.
 
 ---
 
@@ -261,9 +272,9 @@ the dead voter is dropped from each affected shard and a replacement replica is 
 | HLC for commit timestamps | cross-shard snapshots need a global clock | needs bounded clock skew across machines (NTP / TrueTime) |
 | Replicated intents (Percolator) + readiness gate | prepared state survives a leader change → correct recovery | extra Raft round-trip per prepare |
 | Raft config changes, one server at a time | safe membership change (majorities overlap); enables online add/remove + rebalancing | single-server only (no joint consensus); naive even-spread balancer |
-| Single controller / placement driver | simple authority for placement + rebalancing | SPOF for control ops (not data); production replicates or decentralizes it |
+| Placement driver = its own Raft group (PD) | control-plane decisions are durable + survive a PD-leader crash (no SPOF); a new leader resumes from the log | PD voter set is a fixed co-located trio (doesn't auto-shrink); decisions are async (reconcile converges) |
 | Gossip discovery (SWIM/Cassandra-style) | join from one seed, not a full static list; decentralized, partition-tolerant liveness | eventually consistent (not authoritative); cross-machine still needs a stable seed/DNS |
-| Auto-heal: failure detector → re-replicate | a confirmed-dead node's shards re-replicate automatically to restore RF (no operator) | runs in the single controller (control-plane SPOF); needs majority-alive + a grace window; no auto re-add of a returning node |
+| Auto-heal: failure detector → re-replicate | a confirmed-dead node's shards re-replicate automatically to restore RF (no operator), and the healing survives a PD-leader crash | needs majority-alive + a grace window; no auto re-add of a returning node |
 
 ---
 
@@ -294,5 +305,6 @@ python recovery_smoke.py           # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py   # 2PC participant-leader-crash recovery
 python rebalance_smoke.py          # add a node (data rebalances on) then remove it (re-replicates)
 python gossip_smoke.py             # seed-based discovery + failure detection (3 nodes, one seed)
-LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py   # kill a node → controller auto-re-replicates to restore RF
+LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py   # kill a node → PD auto-re-replicates to restore RF
+LITEDB_CLUSTER_NODES=4 python pd_failover_smoke.py  # kill the PD leader → a new PD leader finishes the heal
 ```

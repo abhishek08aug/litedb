@@ -234,9 +234,13 @@ End to end, it demonstrates:
   the cluster via SWIM/Cassandra-style gossip (`gossip.py`); liveness (alive/suspect/dead) is derived
   locally from heartbeat freshness. This is *not* Raft — it's the decentralized membership substrate
   underneath it; node addresses resolve from gossip, falling back to the static pool
-- **Auto-heal on death** — the controller runs a **failure detector** that reads gossip liveness; when
-  a node is confirmed dead by a majority of peers past a grace window, it **auto-re-replicates** that
-  node's shards to restore RF — no clicking. Kill a node and watch DEGRADED → HEALTHY on its own
+- **Control plane is its own Raft group (PD)** — the placement driver (`pd.py`, the TiKV PD model) is
+  co-located on `PD_NODES`; membership decisions go through its Raft log, so they survive a PD-leader
+  crash. Kill the PD leader and a survivor takes over and finishes the job — no SPOF (`pd_failover_smoke.py`)
+- **Auto-heal on death** — the **PD leader** runs a **failure detector** over gossip liveness; when a
+  node is confirmed dead by a majority of peers past a grace window, it **proposes `remove_node`
+  through the PD log** and re-replicates that node's shards to restore RF — no clicking. Kill a node and
+  watch DEGRADED → HEALTHY on its own
 
 Each instance has its own dashboard panel streaming its reasoning — election timeouts, accepting a
 leader, routing by consistent hashing, replicating, applying, running 2PC — so you can *watch* the
@@ -252,7 +256,8 @@ distributed logic instead of reading about it.
 | `node.py` | one instance (a NodeServer): hosts every shard, routes requests, coordinates 2PC, recovers in-doubt txns |
 | `cluster_client.py` | contact-any-node client |
 | `txn_log.py` | coordinator's durable transaction log (2PC recovery) |
-| `controller.py` | control plane: placement + online rebalancing on node add/remove |
+| `pd.py` | placement driver as its OWN Raft group: membership decisions + reconcile + failure detection on the PD leader |
+| `controller.py` | thin client of the PD Raft group (submit decisions, read authoritative state) |
 | `gossip.py` | SWIM/Cassandra-style gossip: seed-based peer discovery + local failure detection |
 | `events.py` / `dashboard.py` | per-instance event log + launcher + live dashboard |
 
@@ -263,7 +268,8 @@ python recovery_smoke.py            # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py # 2PC participant-leader-crash recovery (replicated intents)
 python rebalance_smoke.py           # add a node (data rebalances on) then remove it (re-replicates)
 python gossip_smoke.py              # seed-based discovery + failure detection (3 nodes, one seed)
-LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py  # kill a node → controller auto-restores RF (no clicking)
+LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py  # kill a node → PD auto-restores RF (no clicking)
+LITEDB_CLUSTER_NODES=4 python pd_failover_smoke.py  # kill the PD leader → a new PD leader finishes the heal
 ```
 
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of

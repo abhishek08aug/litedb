@@ -32,6 +32,12 @@ public final class ClusterConfig {
     static {
         for (int i = 1; i <= INITIAL_NODE_COUNT; i++) INITIAL_NODES.add("node-" + i);
     }
+
+    // The Placement Driver (control plane) is its OWN Raft group, co-located on a small odd set of
+    // nodes (like TiKV's PD). Membership decisions go through its log, so they survive a PD-leader crash.
+    public static final List<String> PD_NODES = new ArrayList<>(
+            INITIAL_NODES.subList(0, Math.min(INITIAL_NODES.size() >= 3 ? 3 : 1, INITIAL_NODES.size())));
+
     public static final String HOST = "127.0.0.1";
 
     public static final List<String> SHARDS = new ArrayList<>();

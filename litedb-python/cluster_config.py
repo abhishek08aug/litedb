@@ -22,6 +22,11 @@ NODES: dict[str, list] = {f"node-{i}": ["127.0.0.1", 7000 + i] for i in range(1,
 
 INITIAL_NODES: list[str] = [f"node-{i}" for i in range(1, _INITIAL_NODE_COUNT + 1)]
 
+# The Placement Driver (control plane) is its OWN Raft group, co-located on a small odd set of nodes
+# (like TiKV's PD). Membership decisions (add/remove node) are committed to its log, so they survive a
+# PD-leader crash; a new PD leader resumes reconciling from the durable log.
+PD_NODES: list[str] = INITIAL_NODES[:3] if len(INITIAL_NODES) >= 3 else INITIAL_NODES[:1]
+
 SHARDS: list[str] = [f"shard-{i}" for i in range(_SHARD_COUNT)]
 
 DASHBOARD_PORT = 7080

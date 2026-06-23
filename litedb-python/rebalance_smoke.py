@@ -63,43 +63,43 @@ def main():
         print("  all 12 readable")
 
         # ---- ADD node-4 ----
-        print("\nADD node-4 (spawn it, then rebalance)...")
+        print("\nADD node-4 (spawn it; the PD Raft group rebalances onto it asynchronously)...")
         procs["node-4"] = spawn("node-4")
         time.sleep(1.5)  # let it come up
         ctrl.add_node("node-4")
-        wait_until(lambda: len(ready_leaders(client)) == 6, what="all shards have a ready leader after add")
+
+        # the PD reconciles asynchronously — poll observable placement until node-4 hosts shards and
+        # every shard is back to RF 3
+        def added():
+            h = hosts_of(client)
+            if not h.get("node-4"):
+                return False
+            c = Counter(s for ns in h.values() for s in ns)
+            return len(c) == 6 and all(c[s] == 3 for s in c) and len(ready_leaders(client)) == 6
+        wait_until(added, timeout=45, what="node-4 hosts shards and every shard is RF 3 after add")
 
         hosts = hosts_of(client)
         n4_shards = hosts.get("node-4", set())
         print(f"  node-4 now hosts {sorted(n4_shards)}")
-        assert n4_shards, "node-4 should host some shards after rebalancing (data moved onto it)"
-        # every shard is still on exactly RF=3 nodes
-        cnt = Counter()
-        for ns in hosts.values():
-            for s in ns:
-                cnt[s] += 1
-        assert all(cnt[s] == 3 for s in cnt), f"every shard should be on 3 nodes: {dict(cnt)}"
-        print(f"  placement spread across 4 nodes: { {n: len(s) for n, s in sorted(hosts.items())} }")
-
-        # data that landed on a shard now hosted by node-4 must be present + readable
         moved_key = next((f"key{i}" for i in range(12) if part.shard_for(f"key{i}") in n4_shards), None)
         assert all(client.get(f"key{i}") == f"val{i}" for i in range(12)), "data must survive rebalancing"
         if moved_key:
             print(f"  e.g. {moved_key} (shard {part.shard_for(moved_key)}) is on node-4 and still reads "
                   f"= {client.get(moved_key)}")
-        # write a new key after add — cluster still fully functional
         assert client.put("after-add", "ok").get("ok") and client.get("after-add") == "ok"
-        print("  reads/writes fine after add ✓")
+        print("  placement spread across 4 nodes; reads/writes fine after add ✓")
 
         # ---- REMOVE node-4 ----
-        print("\nREMOVE node-4 (re-replicate its shards back to restore RF on the other 3)...")
+        print("\nREMOVE node-4 (the PD re-replicates its shards back to restore RF on the other 3)...")
         ctrl.remove_node("node-4")
-        wait_until(lambda: len(ready_leaders(client)) == 6, what="ready leaders after remove")
-        time.sleep(0.5)
-        hosts = hosts_of(client)
-        assert not hosts.get("node-4"), f"node-4 should host nothing after removal: {hosts.get('node-4')}"
-        cnt = Counter(s for ns in hosts.values() for s in ns)
-        assert all(cnt[s] == 3 for s in cnt), f"RF should be restored to 3 everywhere: {dict(cnt)}"
+
+        def removed():
+            h = hosts_of(client)
+            if h.get("node-4"):
+                return False
+            c = Counter(s for ns in h.values() for s in ns)
+            return len(c) == 6 and all(c[s] == 3 for s in c) and len(ready_leaders(client)) == 6
+        wait_until(removed, timeout=45, what="node-4 drained and RF restored on 3 nodes")
         assert all(client.get(f"key{i}") == f"val{i}" for i in range(12)), "data intact after removal"
         print("  node-4 drained; placement back on 3 nodes; all data intact ✓")
 

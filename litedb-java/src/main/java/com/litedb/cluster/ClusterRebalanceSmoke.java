@@ -27,14 +27,25 @@ public class ClusterRebalanceSmoke {
     }
 
     @SuppressWarnings("unchecked")
-    static Map<String, Integer> hostsCount(ClusterClient client) {
-        Map<String, Integer> m = new TreeMap<>();
+    static Map<String, java.util.Set<String>> hostsOf(ClusterClient client) {
+        Map<String, java.util.Set<String>> out = new TreeMap<>();
         for (Map<String, Object> st : client.status()) {
-            if (Boolean.TRUE.equals(st.get("alive"))) {
-                m.put((String) st.get("node"), ((List<Object>) st.get("shards")).size());
+            if (!Boolean.TRUE.equals(st.get("alive"))) continue;
+            java.util.Set<String> shards = new java.util.HashSet<>();
+            for (Object so : (List<Object>) st.get("shards")) {
+                shards.add((String) ((Map<String, Object>) so).get("group"));
             }
+            out.put((String) st.get("node"), shards);
         }
-        return m;
+        return out;
+    }
+
+    static boolean allRf3(Map<String, java.util.Set<String>> hosts, int nShards) {
+        Map<String, Integer> c = new java.util.HashMap<>();
+        for (java.util.Set<String> s : hosts.values()) for (String sh : s) c.merge(sh, 1, Integer::sum);
+        if (c.size() != nShards) return false;
+        for (int v : c.values()) if (v != 3) return false;
+        return true;
     }
 
     @SuppressWarnings("unchecked")
@@ -74,25 +85,29 @@ public class ClusterRebalanceSmoke {
             for (int i = 0; i < 12; i++) if (!("val" + i).equals(client.get("key" + i))) throw new AssertionError("read key" + i);
             System.out.println("  all 12 readable");
 
-            System.out.println("\nADD node-4...");
+            System.out.println("\nADD node-4 (the PD Raft group rebalances onto it asynchronously)...");
             spawn("node-4");
             Thread.sleep(1500);
             ctrl.addNode("node-4");
-            waitUntil(() -> readyLeaders(client) == 6, 20000, "ready leaders after add");
-            Map<String, Integer> hosts = hostsCount(client);
-            System.out.println("  shards hosted per node: " + hosts);
-            if (hosts.getOrDefault("node-4", 0) == 0) throw new AssertionError("node-4 should host shards after rebalance");
+            // the PD reconciles async — poll observable placement until node-4 hosts shards and RF 3
+            waitUntil(() -> {
+                Map<String, java.util.Set<String>> h = hostsOf(client);
+                return h.containsKey("node-4") && !h.get("node-4").isEmpty()
+                        && allRf3(h, 6) && readyLeaders(client) == 6;
+            }, 45000, "node-4 hosts shards and every shard is RF 3 after add");
+            System.out.println("  node-4 now hosts " + hostsOf(client).get("node-4"));
             for (int i = 0; i < 12; i++) if (!("val" + i).equals(client.get("key" + i))) throw new AssertionError("data lost after add");
             if (!Boolean.TRUE.equals(client.put("after-add", "ok").get("ok"))) throw new AssertionError("write after add");
             System.out.println("  data moved onto node-4; reads/writes fine after add");
 
-            System.out.println("\nREMOVE node-4...");
+            System.out.println("\nREMOVE node-4 (the PD re-replicates its shards back to restore RF)...");
             ctrl.removeNode("node-4", false);
-            waitUntil(() -> readyLeaders(client) == 6, 20000, "ready leaders after remove");
-            Thread.sleep(500);
-            hosts = hostsCount(client);
-            System.out.println("  shards hosted per node: " + hosts);
-            if (hosts.getOrDefault("node-4", 0) != 0) throw new AssertionError("node-4 should host nothing");
+            waitUntil(() -> {
+                Map<String, java.util.Set<String>> h = hostsOf(client);
+                // node-4 stays alive after draining, so it appears with an EMPTY shard set
+                return h.getOrDefault("node-4", java.util.Set.of()).isEmpty()
+                        && allRf3(h, 6) && readyLeaders(client) == 6;
+            }, 45000, "node-4 drained and RF restored on 3 nodes");
             for (int i = 0; i < 12; i++) if (!("val" + i).equals(client.get("key" + i))) throw new AssertionError("data lost after remove");
             System.out.println("  node-4 drained; RF restored; data intact");
 

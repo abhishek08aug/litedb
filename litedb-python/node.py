@@ -25,6 +25,7 @@ import _loader  # noqa: F401  (puts this dir on sys.path)
 from cluster_config import (
     INITIAL_NODES,
     NODES,
+    PD_NODES,
     compute_placement,
     make_partitioner,
     node_data_dir,
@@ -33,6 +34,7 @@ from cluster_config import (
 from events import EventLog
 from gossip import Gossip
 from hlc import HLC
+from pd import Pd
 from raft_node import RPC_TIMEOUT
 from rpc import RPCClient, RPCServer
 from shard_replica import ShardReplica
@@ -63,6 +65,9 @@ class NodeServer:
             on_event=lambda m: self.events.emit("gossip", m),
         )
 
+        # The Placement Driver is a Raft group co-located on PD_NODES; only those nodes run a replica.
+        self.pd: Optional[Pd] = Pd(self, PD_NODES) if node_id in PD_NODES else None
+
         # shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
         # Starts from the initial even placement; a node added later starts empty and is told what
         # to host + what the placement is.
@@ -84,6 +89,11 @@ class NodeServer:
             "status": self._on_status,
             "events": lambda p: self.events.since(p.get("after", 0)),
             "gossip": lambda p: self.gossip.handle(p),
+            # placement-driver Raft group (control plane)
+            "pd_vote": lambda p: self.pd.raft.handle_vote(p) if self.pd else {"error": "no_pd"},
+            "pd_append": lambda p: self.pd.raft.handle_append(p) if self.pd else {"error": "no_pd"},
+            "pd_propose": self._on_pd_propose,
+            "pd_status": self._on_pd_status,
             "shard_leader": self._on_shard_leader,
             # internal shard ops (coordinator -> shard leader); guarded for shards not hosted here
             "shard_write": lambda p: self._with_shard(
@@ -152,6 +162,22 @@ class NodeServer:
         resp = self.client.call(host, port, "gossip", payload, timeout=1.0)
         return resp["result"] if resp.get("ok") else None
 
+    def _pd_send(self, peer_node: str, kind: str, payload: dict) -> dict:
+        """Transport for the PD Raft group: a vote/append rides its own pd_* RPC method so it doesn't
+        collide with the per-shard Raft routing (which keys off the shard id)."""
+        host, port = self._addr(peer_node)
+        return self.client.call(host, port, "pd_" + kind, payload, timeout=RPC_TIMEOUT)
+
+    def _on_pd_propose(self, p: dict) -> dict:
+        if self.pd is None:
+            return {"ok": False, "error": "no_pd"}
+        return self.pd.propose(p["decision"])
+
+    def _on_pd_status(self, _p: dict) -> dict:
+        if self.pd is None:
+            return {"ok": False, "error": "no_pd"}
+        return self.pd.status()
+
     def _make_send(self, shard_id: str):
         def send(peer_node: str, kind: str, payload: dict) -> dict:
             host, port = self._addr(peer_node)
@@ -164,6 +190,8 @@ class NodeServer:
         self._running = True
         self.server.start()
         self.gossip.start()
+        if self.pd is not None:
+            self.pd.start()
         for rep in self.shards.values():
             rep.start()
         threading.Thread(target=self._sweep_loop, daemon=True).start()
@@ -202,6 +230,8 @@ class NodeServer:
 
     def stop(self) -> None:
         self.gossip.stop()
+        if self.pd is not None:
+            self.pd.stop()
         for rep in self.shards.values():
             rep.stop()
         self.server.stop()

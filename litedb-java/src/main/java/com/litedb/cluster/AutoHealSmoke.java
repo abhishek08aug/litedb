@@ -95,9 +95,10 @@ public class AutoHealSmoke {
             for (int i = 0; i < 12; i++) if (!("val" + i).equals(client.get("key" + i))) throw new AssertionError("read key" + i);
             System.out.println("  wrote + read 12 keys");
 
-            ctrl.startFailureDetector(1000, 3000);
-            String victim = ClusterConfig.INITIAL_NODES.get(0);
-            System.out.println("\nkilling " + victim + " — NO manual controller call; the failure detector must notice");
+            // The PD leader runs the failure detector autonomously — nothing to start. Kill a non-PD
+            // data node (a clean data-node death; killing a PD member is covered by PdFailoverSmoke).
+            String victim = ClusterConfig.INITIAL_NODES.get(ClusterConfig.INITIAL_NODES.size() - 1);
+            System.out.println("\nkilling " + victim + " — NO manual controller call; the PD failure detector must notice");
             procs.get(victim).destroyForcibly();
             procs.get(victim).waitFor();
 

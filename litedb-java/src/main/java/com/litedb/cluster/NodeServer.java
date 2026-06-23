@@ -31,6 +31,7 @@ public final class NodeServer {
     private final Rpc.Server server;
     private final TxnLog txnlog;
     private final Gossip gossip;
+    private final Pd pd;   // placement-driver Raft replica; non-null only on PD_NODES
     private final String dataDir;
     private volatile boolean running = false;
     // shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
@@ -48,6 +49,9 @@ public final class NodeServer {
         this.gossip = new Gossip(nodeId, ClusterConfig.HOST, port, ClusterConfig.seedAddrs(nodeId),
                 this::gossipSend, m -> events.emit("gossip", m));
 
+        // The Placement Driver is a Raft group co-located on PD_NODES; only those nodes run a replica.
+        this.pd = ClusterConfig.PD_NODES.contains(nodeId) ? new Pd(this, ClusterConfig.PD_NODES) : null;
+
         this.placement = ClusterConfig.computePlacement(ClusterConfig.INITIAL_NODES);
         for (Map.Entry<String, List<String>> e : placement.entrySet()) {
             if (e.getValue().contains(nodeId)) createReplica(e.getKey(), e.getValue());
@@ -62,6 +66,11 @@ public final class NodeServer {
         handlers.put("status", this::onStatus);
         handlers.put("events", p -> events.since(p.get("after") == null ? 0 : num(p, "after")));
         handlers.put("gossip", gossip::handle);
+        // placement-driver Raft group (control plane)
+        handlers.put("pd_vote", p -> pd != null ? pd.raft.handleVote(p) : resp("error", "no_pd"));
+        handlers.put("pd_append", p -> pd != null ? pd.raft.handleAppend(p) : resp("error", "no_pd"));
+        handlers.put("pd_propose", this::onPdPropose);
+        handlers.put("pd_status", p -> pd != null ? pd.status() : resp("ok", false, "error", "no_pd"));
         handlers.put("shard_leader", this::onShardLeader);
         handlers.put("shard_write", p -> withShard(p, r -> r.commitWrite(writes(p), readTs(p), 3000)));
         handlers.put("shard_get", this::onShardGet);
@@ -147,10 +156,31 @@ public final class NodeServer {
         return Boolean.TRUE.equals(r.get("ok")) ? (Map<String, Object>) r.get("result") : null;
     }
 
+    /** Transport for the PD Raft group: vote/append ride their own pd_* RPC so they don't collide
+     * with per-shard Raft routing (which keys off the shard id). */
+    Map<String, Object> pdSend(String peerNode, String kind, Map<String, Object> payload) {
+        Gossip.Addr a = addrOf(peerNode);
+        return client.call(a.host, a.port, "pd_" + kind, payload);
+    }
+
+    private Map<String, Object> onPdPropose(Map<String, Object> p) {
+        if (pd == null) return resp("ok", false, "error", "no_pd");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> decision = (Map<String, Object>) p.get("decision");
+        return pd.propose(decision);
+    }
+
+    // accessors the PD replica reuses (it lives inside this node)
+    String nodeId() { return nodeId; }
+    Map<String, Object> callPublic(String node, String method, Map<String, Object> payload) { return call(node, method, payload); }
+    String leaderOfPublic(String shard) { return leaderOf(shard, 1); }
+    Map<String, Object> gossipView() { return gossip.view(); }
+
     public void start() throws Exception {
         running = true;
         server.start();
         gossip.start();
+        if (pd != null) pd.start();
         for (ShardReplica r : shards.values()) r.start();
         Thread t = new Thread(this::sweepLoop, "txn-sweep");
         t.setDaemon(true);
@@ -194,6 +224,7 @@ public final class NodeServer {
 
     public void stop() {
         gossip.stop();
+        if (pd != null) pd.stop();
         for (ShardReplica r : shards.values()) r.stop();
         server.stop();
     }

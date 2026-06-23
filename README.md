@@ -35,15 +35,17 @@ production-grade database.
 > 2PC, recover in-doubt 2PC after a coordinator *or* participant crash (prepared intents are
 > replicated through Raft), and **add/remove nodes online** — shards (with their data) rebalance via
 > Raft membership changes. Nodes **discover each other via gossip** from a single seed (SWIM/Cassandra
-> style, not a static list), with locally-derived alive/suspect/dead liveness; when a node dies, a
-> **gossip failure detector in the controller auto-re-replicates** its shards to restore the
-> replication factor with no operator action. A live web dashboard
+> style, not a static list), with locally-derived alive/suspect/dead liveness. The **control plane is
+> its own Raft group** (a co-located placement driver, the TiKV PD model): membership decisions are
+> committed to the PD log, and its leader runs a gossip **failure detector** that, when a node dies,
+> **auto-re-replicates** its shards to restore the replication factor — with no operator action and
+> surviving a PD-leader crash (so the control plane is not a SPOF). A live web dashboard
 > shows cluster health, config, the consistent-hash ring, the shard→node placement matrix, the live
 > gossip membership matrix, and one event feed per instance narrating its reasoning;
 > you can kill/restart nodes, add/remove nodes, and watch failover + rebalancing. Launch it with
 > `python dashboard.py` or `java com.litedb.cluster.Dashboard`. It is a real end-to-end integration
-> on one machine; it is **not** hardened for the cross-machine failure matrix (replicated control
-> plane, range split/merge, snapshot install, parallel-commit, Jepsen-grade testing). See
+> on one machine; it is **not** hardened for the cross-machine failure matrix (range split/merge,
+> snapshot install, parallel-commit, Jepsen-grade testing). See
 > [ROADMAP.md](ROADMAP.md) for what is built vs. remains.
 
 ---
