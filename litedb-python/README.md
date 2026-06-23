@@ -270,6 +270,7 @@ python rebalance_smoke.py           # add a node (data rebalances on) then remov
 python gossip_smoke.py              # seed-based discovery + failure detection (3 nodes, one seed)
 LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py  # kill a node → PD auto-restores RF (no clicking)
 LITEDB_CLUSTER_NODES=4 python pd_failover_smoke.py  # kill the PD leader → a new PD leader finishes the heal
+LITEDB_CLUSTER_NODES=4 python rejoin_smoke.py       # reap a node, restart+re-add → pre-vote keeps it healthy
 ```
 
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of

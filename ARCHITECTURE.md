@@ -132,6 +132,13 @@ voting safety rule, commit advancement) with **persistent** term/vote/log (`fsyn
 replica recovers. Committed entries apply deterministically to that shard's MVCC store
 ([`shard_store.py`](litedb-python/shard_store.py)) — so replicas converge byte-for-byte.
 
+Elections use **pre-vote**: a follower that times out first runs a side-effect-free pre-vote round
+(no term bump, no recorded vote) and only starts a real election if a majority *would* grant it. Peers
+refuse a pre-vote while they're still hearing from their current leader (leader stickiness). This stops
+a **removed / stale / partitioned** replica from repeatedly incrementing the term and disrupting a
+healthy leader — which is exactly what lets a reaped node **rejoin without breaking the cluster** (its
+orphaned shard replicas can't win, so they stay harmless instead of livelocking elections).
+
 > **Multi-raft vs single-raft** — the decision most people miss. One Raft group for the whole
 > cluster (etcd-style) means one leader serializes *every* write → a throughput ceiling. One group
 > *per shard* means N independent leaders spread across nodes → writes to different shards commit in
@@ -255,6 +262,13 @@ surviving PD replicas re-elect a new PD leader → it reads the durable decision
 toward `compute_placement(active)` → any half-finished rebalance is completed and pending heals proceed.
 The control plane is not a SPOF.
 
+**Reaped node rejoins** — a node that was auto-reaped (dead) restarts still holding stale shard replicas
+on disk (its `drop_shard` was skipped while it was dead). On restart those replicas try to resurrect,
+but **pre-vote** prevents them from disrupting: peers in the healthy group refuse the stale replica's
+pre-vote (they're hearing from their leader), so it can't bump the term. Shards it's a current voter of
+catch up via Raft; orphaned shards stay harmless. Re-adding the node (`+ Add node`) reintegrates it
+cleanly. Without pre-vote those stale replicas livelock elections and leave shards leaderless.
+
 ---
 
 ## Design decisions (the interview-defensible set)
@@ -267,6 +281,7 @@ The control plane is not a SPOF.
 | SQL = KV keys (catalog/rows/indexes) | one storage substrate for everything (the TiKV model) | joins / aggregates are out of scope |
 | Order-preserving typed encoding | numeric range scans work as byte ranges | per-type encoders to maintain |
 | Multi-raft (group per shard) | N leaders → parallel writes, balanced load | more moving parts than single-raft |
+| Pre-vote + leader stickiness | a removed/stale/partitioned replica can't bump the term & disrupt a healthy leader → clean rejoin | one extra round-trip per election; orphaned replicas linger (harmless) until fenced |
 | Consistent hashing | adding a shard remaps ~1/N keys | no range scans across shards; fixed shard set (no split/merge) |
 | 2PC for cross-shard atomicity | single Raft commit is atomic only within a shard | blocking protocol; parallel-commit would cut latency |
 | HLC for commit timestamps | cross-shard snapshots need a global clock | needs bounded clock skew across machines (NTP / TrueTime) |
@@ -307,4 +322,5 @@ python rebalance_smoke.py          # add a node (data rebalances on) then remove
 python gossip_smoke.py             # seed-based discovery + failure detection (3 nodes, one seed)
 LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py   # kill a node → PD auto-re-replicates to restore RF
 LITEDB_CLUSTER_NODES=4 python pd_failover_smoke.py  # kill the PD leader → a new PD leader finishes the heal
+LITEDB_CLUSTER_NODES=4 python rejoin_smoke.py       # reap a node, restart+re-add it → pre-vote keeps the cluster healthy
 ```

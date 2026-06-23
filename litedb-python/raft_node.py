@@ -84,6 +84,11 @@ class RaftGroup:
         self.role = Role.FOLLOWER
         self.leader_id: Optional[str] = None
         self.votes_received: set[str] = set()
+        self._pre_votes: set[str] = set()       # grants in the current pre-vote round
+        self._pre_vote_term = 0                  # the hypothetical term we're pre-voting for
+        self._campaign_at = 0.0                  # when we last started a pre-election (throttles retries
+        #                                          WITHOUT polluting _last_heartbeat, which must track
+        #                                          only real leader contact for leader-stickiness)
         self.next_index: dict[str, int] = {}
         self.match_index: dict[str, int] = {}
 
@@ -205,7 +210,58 @@ class RaftGroup:
             with self._lock:
                 if self.role == Role.LEADER or self.node_id not in self.voters:
                     continue  # non-voters (e.g. a node being removed / still catching up) don't elect
-                if time.monotonic() - self._last_heartbeat >= self._election_timeout:
+                # campaign when we've heard from neither a leader (real contact) nor started a recent
+                # pre-election — _campaign_at throttles retries without faking leader contact
+                idle = time.monotonic() - max(self._last_heartbeat, self._campaign_at)
+                if idle >= self._election_timeout:
+                    self._start_pre_election()
+
+    def _start_pre_election(self) -> None:
+        """Pre-vote round — Raft's fix for *disruptive* servers. Probe whether a majority WOULD vote
+        for us at the next term, WITHOUT incrementing our term or recording a vote; only on success do
+        we start a real election. A removed/partitioned/stale replica that keeps timing out can no
+        longer bump the term and disrupt a healthy leader — peers reject its pre-vote while they're
+        still hearing heartbeats from their current leader (leader stickiness, in `handle_vote`).
+
+        Note we update `_campaign_at` (the retry throttle), NOT `_last_heartbeat`: the latter must keep
+        reflecting real leader contact, or a node that just ran a failed pre-vote would wrongly think a
+        leader is present and start rejecting everyone else's pre-votes (election deadlock)."""
+        self._campaign_at = time.monotonic()
+        self._election_timeout = self._new_timeout()
+        self._pre_vote_term = self.current_term + 1
+        self._pre_votes = {self.node_id}
+        self._emit("election", f"{self.group_id}: election timeout — running a PRE-VOTE for term "
+                               f"{self._pre_vote_term} (NOT bumping my term yet), asking {self.peers}")
+        if len(self._pre_votes & self.voters) >= self._majority():
+            self._start_election()
+            return
+        req = {
+            "pre_vote": True,
+            "term": self._pre_vote_term,
+            "candidate_id": self.node_id,
+            "last_log_index": len(self.log),
+            "last_log_term": self.log[-1]["term"] if self.log else 0,
+        }
+        for p in self.peers:
+            threading.Thread(target=self._request_pre_vote, args=(p, req), daemon=True).start()
+
+    def _request_pre_vote(self, peer: str, req: dict) -> None:
+        resp = self._send(peer, "vote", req)
+        if not resp.get("ok"):
+            return
+        r = resp["result"]
+        with self._lock:
+            # stale if our term moved on or we already left the follower (pre-candidate) state
+            if self.role != Role.FOLLOWER or self._pre_vote_term != self.current_term + 1:
+                return
+            if r["term"] > self.current_term:
+                self._become_follower(r["term"])  # we're behind — adopt and stand down, don't disrupt
+                return
+            if r.get("vote_granted"):
+                self._pre_votes.add(r["voter_id"])
+                if len(self._pre_votes & self.voters) >= self._majority():
+                    self._emit("election", f"{self.group_id}: pre-vote carried a majority → promoting "
+                                           f"to a real election for term {self.current_term + 1}")
                     self._start_election()
 
     def _start_election(self) -> None:
@@ -274,22 +330,38 @@ class RaftGroup:
 
     def handle_vote(self, req: dict) -> dict:
         with self._lock:
-            if req["term"] > self.current_term:
+            pre = req.get("pre_vote", False)
+            # A real vote at a higher term updates our term first. A PRE-vote is side-effect-free — it
+            # must NOT change term/voted_for, so a probe (or a stale replica) can't disrupt us.
+            if not pre and req["term"] > self.current_term:
                 self._become_follower(req["term"])
+
+            my_term = self.log[-1]["term"] if self.log else 0
+            my_index = len(self.log)
+            up_to_date = (req["last_log_term"] > my_term or
+                          (req["last_log_term"] == my_term and req["last_log_index"] >= my_index))
+            # Leader stickiness: if we're a leader, or are still hearing from one within the election
+            # timeout, refuse to grant a PRE-vote. This is what stops a removed/partitioned replica
+            # from repeatedly forcing new terms and disrupting a healthy group.
+            leader_recent = (self.role == Role.LEADER or
+                             (self.leader_id is not None and
+                              time.monotonic() - self._last_heartbeat < self._election_timeout))
+
+            if pre:
+                granted = req["term"] >= self.current_term and up_to_date and not leader_recent
+                return {"term": self.current_term, "vote_granted": granted,
+                        "voter_id": self.node_id, "pre_vote": True}
+
             granted = False
-            if req["term"] >= self.current_term and self.voted_for in (None, req["candidate_id"]):
-                my_term = self.log[-1]["term"] if self.log else 0
-                my_index = len(self.log)
-                up_to_date = (req["last_log_term"] > my_term or
-                              (req["last_log_term"] == my_term and req["last_log_index"] >= my_index))
-                if up_to_date:
-                    granted = True
-                    self.voted_for = req["candidate_id"]
-                    self._last_heartbeat = time.monotonic()
-                    self._persist_meta()
-                    self._emit("vote", f"{self.group_id}: granted my vote to {req['candidate_id']} "
-                                       f"for term {req['term']} (its log is at least as up-to-date "
-                                       f"as mine — safe to elect)")
+            if (req["term"] >= self.current_term and self.voted_for in (None, req["candidate_id"])
+                    and up_to_date):
+                granted = True
+                self.voted_for = req["candidate_id"]
+                self._last_heartbeat = time.monotonic()
+                self._persist_meta()
+                self._emit("vote", f"{self.group_id}: granted my vote to {req['candidate_id']} "
+                                   f"for term {req['term']} (its log is at least as up-to-date "
+                                   f"as mine — safe to elect)")
             return {"term": self.current_term, "vote_granted": granted, "voter_id": self.node_id}
 
     # ------------------------------------------------------------------ #

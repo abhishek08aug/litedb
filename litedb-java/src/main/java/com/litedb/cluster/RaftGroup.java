@@ -77,6 +77,11 @@ public final class RaftGroup {
     private Role role = Role.FOLLOWER;
     private volatile String leaderId = null;
     private final Set<String> votesReceived = ConcurrentHashMap.newKeySet();
+    private final Set<String> preVotes = ConcurrentHashMap.newKeySet();  // grants in the pre-vote round
+    private long preVoteTerm = 0;          // hypothetical term we're pre-voting for
+    private long campaignAtNs = 0;         // when we last started a pre-election (throttles retries
+    //                                        WITHOUT polluting lastHeartbeatNs, which tracks only real
+    //                                        leader contact — see startPreElection)
     private final Map<String, Long> nextIndex = new ConcurrentHashMap<>();
     private final Map<String, Long> matchIndex = new ConcurrentHashMap<>();
 
@@ -319,11 +324,64 @@ public final class RaftGroup {
             lock.lock();
             try {
                 if (role == Role.LEADER || !voters.contains(nodeId)) continue;  // non-voters don't elect
-                long elapsedMs = (System.nanoTime() - lastHeartbeatNs) / 1_000_000;
-                if (elapsedMs >= electionTimeoutMs) startElection();
+                // campaign when we've heard from neither a leader (real contact) nor started a recent
+                // pre-election — campaignAtNs throttles retries without faking leader contact
+                long idleMs = (System.nanoTime() - Math.max(lastHeartbeatNs, campaignAtNs)) / 1_000_000;
+                if (idleMs >= electionTimeoutMs) startPreElection();
             } finally {
                 lock.unlock();
             }
+        }
+    }
+
+    /** Pre-vote round — Raft's fix for *disruptive* servers. Probe whether a majority WOULD vote for
+     * us at the next term, WITHOUT incrementing our term or recording a vote; only on success do we
+     * start a real election. A removed/partitioned/stale replica that keeps timing out can no longer
+     * bump the term and disrupt a healthy leader — peers reject its pre-vote while hearing from their
+     * current leader (leader stickiness, in handleVote). We touch campaignAtNs (the retry throttle),
+     * NOT lastHeartbeatNs, so a failed pre-vote doesn't make us think a leader is present. */
+    private void startPreElection() {
+        campaignAtNs = System.nanoTime();
+        electionTimeoutMs = newTimeout();
+        preVoteTerm = currentTerm + 1;
+        preVotes.clear();
+        preVotes.add(nodeId);
+        events.emit("election", groupId + ": election timeout — running a PRE-VOTE for term " + preVoteTerm
+                + " (NOT bumping my term yet), asking " + peers);
+        if (preVotes.stream().filter(voters::contains).count() >= majority()) { startElection(); return; }
+        Map<String, Object> req = new LinkedHashMap<>();
+        req.put("pre_vote", true);
+        req.put("term", preVoteTerm);
+        req.put("candidate_id", nodeId);
+        req.put("last_log_index", (long) log.size());
+        req.put("last_log_term", log.isEmpty() ? 0L : num(log.get(log.size() - 1), "term"));
+        for (String p : peers) {
+            final String peer = p;
+            Thread t = new Thread(() -> requestPreVote(peer, req));
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void requestPreVote(String peer, Map<String, Object> req) {
+        Map<String, Object> resp = transport.send(peer, "vote", req);
+        if (!Boolean.TRUE.equals(resp.get("ok"))) return;
+        Map<String, Object> r = (Map<String, Object>) resp.get("result");
+        lock.lock();
+        try {
+            if (role != Role.FOLLOWER || preVoteTerm != currentTerm + 1) return;
+            long term = num(r, "term");
+            if (term > currentTerm) { becomeFollower(term); return; }
+            if (Boolean.TRUE.equals(r.get("vote_granted"))) {
+                preVotes.add((String) r.get("voter_id"));
+                if (preVotes.stream().filter(voters::contains).count() >= majority()) {
+                    events.emit("election", groupId + ": pre-vote carried a majority → promoting to a real election");
+                    startElection();
+                }
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -374,24 +432,36 @@ public final class RaftGroup {
     public Map<String, Object> handleVote(Map<String, Object> req) {
         lock.lock();
         try {
+            boolean pre = Boolean.TRUE.equals(req.get("pre_vote"));
             long term = num(req, "term");
-            if (term > currentTerm) becomeFollower(term);
-            boolean granted = false;
+            // A real vote at a higher term updates our term first. A PRE-vote is side-effect-free — it
+            // must NOT change term/votedFor, so a probe (or a stale replica) can't disrupt us.
+            if (!pre && term > currentTerm) becomeFollower(term);
+
+            long myTerm = log.isEmpty() ? 0 : num(log.get(log.size() - 1), "term");
+            long myIndex = log.size();
+            long candTerm = num(req, "last_log_term");
+            long candIndex = num(req, "last_log_index");
+            boolean upToDate = candTerm > myTerm || (candTerm == myTerm && candIndex >= myIndex);
+            // Leader stickiness: if we're a leader or still hearing from one within the election
+            // timeout, refuse a PRE-vote — this stops a removed/stale replica from forcing new terms.
+            boolean leaderRecent = role == Role.LEADER
+                    || (leaderId != null && (System.nanoTime() - lastHeartbeatNs) / 1_000_000 < electionTimeoutMs);
             String cand = (String) req.get("candidate_id");
-            if (term >= currentTerm && (votedFor == null || votedFor.equals(cand))) {
-                long myTerm = log.isEmpty() ? 0 : num(log.get(log.size() - 1), "term");
-                long myIndex = log.size();
-                long candTerm = num(req, "last_log_term");
-                long candIndex = num(req, "last_log_index");
-                boolean upToDate = candTerm > myTerm || (candTerm == myTerm && candIndex >= myIndex);
-                if (upToDate) {
-                    granted = true;
-                    votedFor = cand;
-                    lastHeartbeatNs = System.nanoTime();
-                    persistMeta();
-                    events.emit("vote", groupId + ": granted my vote to " + cand + " for term " + term
-                            + " (its log is at least as up-to-date as mine — safe to elect)");
-                }
+
+            if (pre) {
+                boolean granted = term >= currentTerm && upToDate && !leaderRecent;
+                return resp("term", currentTerm, "vote_granted", granted, "voter_id", nodeId, "pre_vote", true);
+            }
+
+            boolean granted = false;
+            if (term >= currentTerm && (votedFor == null || votedFor.equals(cand)) && upToDate) {
+                granted = true;
+                votedFor = cand;
+                lastHeartbeatNs = System.nanoTime();
+                persistMeta();
+                events.emit("vote", groupId + ": granted my vote to " + cand + " for term " + term
+                        + " (its log is at least as up-to-date as mine — safe to elect)");
             }
             return resp("term", currentTerm, "vote_granted", granted, "voter_id", nodeId);
         } finally {

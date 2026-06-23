@@ -69,9 +69,9 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
 **Run it:** `python dashboard.py` or `java com.litedb.cluster.Dashboard` → http://127.0.0.1:7080
 (Java: 7180). **Tests:** `pytest test_distributed.py`; `python cluster_smoke.py` /
 `recovery_smoke.py` / `participant_recovery_smoke.py` / `rebalance_smoke.py` / `gossip_smoke.py` /
-`autoheal_smoke.py` / `pd_failover_smoke.py`; Java `ClusterSmoke` / `ClusterRecoverySmoke` /
-`ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke` / `GossipSmoke` / `AutoHealSmoke` /
-`PdFailoverSmoke`. Set `LITEDB_CLUSTER_RF=2` for replication factor 2.
+`autoheal_smoke.py` / `pd_failover_smoke.py` / `rejoin_smoke.py`; Java `ClusterSmoke` /
+`ClusterRecoverySmoke` / `ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke` / `GossipSmoke` /
+`AutoHealSmoke` / `PdFailoverSmoke` / `RejoinSmoke`. Set `LITEDB_CLUSTER_RF=2` for replication factor 2.
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 
@@ -112,8 +112,11 @@ named gap for production. Listed so the boundary is explicit, not hidden.
 - **Membership change is single-server only.** Add/remove one voter at a time is implemented; there's
   no joint-consensus (multi-server) change and no learner-then-promote phase. Death-triggered
   re-replication is now **automatic** (the controller's gossip failure detector reaps a confirmed-dead
-  node and restores RF), but a returning node is not yet auto-re-added — bringing capacity back is a
-  manual `+ Add node`.
+  node and restores RF). A reaped node can **rejoin cleanly** — pre-vote stops its stale shard replicas
+  from disrupting the healthy groups (`rejoin_smoke.py` / `RejoinSmoke.java`) — but it is not yet
+  *auto*-re-added (bringing capacity back is a manual `+ Add node`), and the rejoining node still keeps
+  orphaned stale replicas it's no longer a voter of (harmless under pre-vote; explicit fencing/wipe is
+  the cleanup that remains).
 - **Snapshot install is log-based.** A far-behind replica catches up by log replication, not by
   shipping a compacted snapshot — fine for small logs, not for large state.
 - **Seed-based discovery, single-machine seeds.** Nodes discover each other via **gossip** from a
@@ -139,7 +142,9 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 - [ ] Sync / quorum replication tuning and semi-sync modes (commit is majority today)
 - [ ] Follower reads (lease / closed-timestamp) for read scaling
 - [ ] Raft log compaction + snapshot install for slow/recovering followers (catchup is log-based)
-- [ ] Pre-vote / leader leases to avoid disruptive elections under partition
+- [x] **Pre-vote** (with leader stickiness) — a removed / stale / partitioned replica can no longer
+      bump the term and disrupt a healthy leader; makes a reaped node's REJOIN non-disruptive
+- [ ] Leader leases / check-quorum for read leases and faster stale-leader detection
 
 ### 2. Sharding & data placement
 - [x] Consistent-hash partitioning of keys into shards
