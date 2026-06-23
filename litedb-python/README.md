@@ -275,9 +275,10 @@ LITEDB_CLUSTER_NODES=4 python pd_failover_smoke.py  # kill the PD leader → a n
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of
 the distributed algorithms — real RPC, real Raft (incl. single-server membership changes), real
 partitioning, real 2PC, real failover, real 2PC failure recovery (coordinator *and* participant),
-and real online rebalancing — but it is **not** hardened for the cross-machine failure matrix: the
-control plane is a single orchestrator (not a replicated PD), the balancer is naive even-spread (no
-range split/merge), snapshot install is log-based, no parallel-commit, and it is not Jepsen-tested.
+real online rebalancing, and a **control plane that is its own Raft group** (PD — survives a PD-leader
+crash) — but it is **not** hardened for the cross-machine failure matrix: the PD's voter set is a fixed
+co-located trio (doesn't auto-shrink), the balancer is naive even-spread (no range split/merge),
+snapshot install is log-based, no parallel-commit, and it is not Jepsen-tested.
 The same cluster is implemented in Java (`com.litedb.cluster`). See [../ROADMAP.md](../ROADMAP.md)
 for exactly what is built vs. what remains.
 
