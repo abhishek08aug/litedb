@@ -202,6 +202,15 @@ The control plane is a single orchestrator (a SPOF for *control* operations, not
 shards keep serving through their Raft groups). Production replicates it (PD-as-Raft-group) or
 decentralizes it (CockroachDB); see [ROADMAP.md](ROADMAP.md).
 
+**Auto-heal on death.** The controller also runs a gossip-fed **failure detector**
+(`start_failure_detector`): a reconcile loop that reads each node's gossip view via `status` and, when
+a node is reported DEAD by a **majority** of its live peers and stays dead past a grace window, fires
+`remove_node(dead=True)` — re-replicating its shards onto survivors to **restore RF, with no operator
+action**. The majority rule rejects one node's false suspicion; an "act only while a majority is alive"
+guard stops a partitioned minority from reaping the majority (and matches the fact that a Raft config
+change needs a quorum to commit anyway). So a node death self-heals end-to-end: failover keeps it
+available immediately, then gossip detection → reap → re-replication restores full redundancy.
+
 ### Watching it — [`events.py`](litedb-python/events.py) / [`dashboard.py`](litedb-python/dashboard.py)
 Each node emits a human-readable event for every meaningful action (election, accepting a leader,
 routing by hashing, replicating, applying, running 2PC). The dashboard shows cluster health, config,
@@ -229,6 +238,12 @@ node, it creates a follower there and appends a config entry adding it (one serv
 follower catches up via Raft (the data moves) → the controller drops an old replica. Remove is the
 mirror: add a replacement replica elsewhere to restore RF, then drop the departing one.
 
+**Node death (auto-heal)** — a node dies → its shards' Raft groups re-elect leaders on the survivors
+(immediate failover, data intact) → gossip ages the node to DEAD in its peers' views → the controller's
+failure detector sees the majority-dead verdict past the grace window → fires `remove_node(dead)` →
+the dead voter is dropped from each affected shard and a replacement replica is added on a survivor
+(catch-up via Raft) → RF restored, all with no operator action.
+
 ---
 
 ## Design decisions (the interview-defensible set)
@@ -247,7 +262,8 @@ mirror: add a replacement replica elsewhere to restore RF, then drop the departi
 | Replicated intents (Percolator) + readiness gate | prepared state survives a leader change → correct recovery | extra Raft round-trip per prepare |
 | Raft config changes, one server at a time | safe membership change (majorities overlap); enables online add/remove + rebalancing | single-server only (no joint consensus); naive even-spread balancer |
 | Single controller / placement driver | simple authority for placement + rebalancing | SPOF for control ops (not data); production replicates or decentralizes it |
-| Gossip discovery (SWIM/Cassandra-style) | join from one seed, not a full static list; decentralized, partition-tolerant liveness | eventually consistent (not authoritative); cross-machine still needs a stable seed/DNS; the dead verdict isn't yet auto-wired to trigger re-replication |
+| Gossip discovery (SWIM/Cassandra-style) | join from one seed, not a full static list; decentralized, partition-tolerant liveness | eventually consistent (not authoritative); cross-machine still needs a stable seed/DNS |
+| Auto-heal: failure detector → re-replicate | a confirmed-dead node's shards re-replicate automatically to restore RF (no operator) | runs in the single controller (control-plane SPOF); needs majority-alive + a grace window; no auto re-add of a returning node |
 
 ---
 
@@ -278,4 +294,5 @@ python recovery_smoke.py           # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py   # 2PC participant-leader-crash recovery
 python rebalance_smoke.py          # add a node (data rebalances on) then remove it (re-replicates)
 python gossip_smoke.py             # seed-based discovery + failure detection (3 nodes, one seed)
+LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py   # kill a node → controller auto-re-replicates to restore RF
 ```

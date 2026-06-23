@@ -234,6 +234,9 @@ End to end, it demonstrates:
   the cluster via SWIM/Cassandra-style gossip (`gossip.py`); liveness (alive/suspect/dead) is derived
   locally from heartbeat freshness. This is *not* Raft — it's the decentralized membership substrate
   underneath it; node addresses resolve from gossip, falling back to the static pool
+- **Auto-heal on death** — the controller runs a **failure detector** that reads gossip liveness; when
+  a node is confirmed dead by a majority of peers past a grace window, it **auto-re-replicates** that
+  node's shards to restore RF — no clicking. Kill a node and watch DEGRADED → HEALTHY on its own
 
 Each instance has its own dashboard panel streaming its reasoning — election timeouts, accepting a
 leader, routing by consistent hashing, replicating, applying, running 2PC — so you can *watch* the
@@ -260,6 +263,7 @@ python recovery_smoke.py            # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py # 2PC participant-leader-crash recovery (replicated intents)
 python rebalance_smoke.py           # add a node (data rebalances on) then remove it (re-replicates)
 python gossip_smoke.py              # seed-based discovery + failure detection (3 nodes, one seed)
+LITEDB_CLUSTER_NODES=4 python autoheal_smoke.py  # kill a node → controller auto-restores RF (no clicking)
 ```
 
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of

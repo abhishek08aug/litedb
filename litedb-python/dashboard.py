@@ -64,6 +64,8 @@ class Launcher:
             self.start_node(nid)
         time.sleep(2.5)
         self.controller.broadcast_placement()
+        # auto-heal: gossip detects a dead node → controller re-replicates to restore RF, no clicking
+        self.controller.start_failure_detector()
 
     def start_node(self, nid: str) -> None:
         if nid in self.procs and self.procs[nid].poll() is None:
@@ -100,6 +102,7 @@ class Launcher:
         threading.Thread(target=go, daemon=True).start()
 
     def stop_all(self) -> None:
+        self.controller.stop()
         for nid in list(self.procs):
             self.kill_node(nid)
 

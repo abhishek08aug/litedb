@@ -45,6 +45,8 @@ public final class Dashboard {
         for (String nid : ClusterConfig.INITIAL_NODES) startNode(nid);
         Thread.sleep(2500);
         controller.broadcastPlacement();
+        // auto-heal: gossip detects a dead node → controller re-replicates to restore RF, no clicking
+        controller.startFailureDetector();
     }
 
     void addNode() throws IOException {
@@ -82,6 +84,7 @@ public final class Dashboard {
     }
 
     void stopAll() {
+        controller.stop();
         for (Process p : procs.values()) p.destroyForcibly();
     }
 

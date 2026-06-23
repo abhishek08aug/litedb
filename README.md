@@ -35,7 +35,9 @@ production-grade database.
 > 2PC, recover in-doubt 2PC after a coordinator *or* participant crash (prepared intents are
 > replicated through Raft), and **add/remove nodes online** — shards (with their data) rebalance via
 > Raft membership changes. Nodes **discover each other via gossip** from a single seed (SWIM/Cassandra
-> style, not a static list), with locally-derived alive/suspect/dead liveness. A live web dashboard
+> style, not a static list), with locally-derived alive/suspect/dead liveness; when a node dies, a
+> **gossip failure detector in the controller auto-re-replicates** its shards to restore the
+> replication factor with no operator action. A live web dashboard
 > shows cluster health, config, the consistent-hash ring, the shard→node placement matrix, the live
 > gossip membership matrix, and one event feed per instance narrating its reasoning;
 > you can kill/restart nodes, add/remove nodes, and watch failover + rebalancing. Launch it with

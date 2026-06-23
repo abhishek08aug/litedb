@@ -12,8 +12,14 @@ and applies the moves one Raft membership change at a time:
 Single-server-at-a-time keeps every Raft group safe (old and new majorities overlap). Demo scope:
 the controller itself is a single orchestrator (a real PD is its own Raft group), and placement is
 broadcast to nodes (eventual consistency; stale routing just gets a `not_hosted` and re-resolves).
+
+It also runs an opt-in **failure detector** (`start_failure_detector`): a reconcile loop that reads
+gossip liveness via node `status` and, when a node is reported DEAD by a majority of its live peers
+past a grace window, auto-fires `remove_node(dead=True)` to restore RF — closing the loop from
+"gossip detected a death" to "redundancy healed" with no human action.
 """
 
+import threading
 import time
 from typing import Callable, Optional
 
@@ -28,6 +34,14 @@ class Controller:
         self.active = list(active if active is not None else INITIAL_NODES)
         self.placement: dict[str, list[str]] = compute_placement(self.active)
         self._emit = on_event or (lambda m: None)
+        # membership ops (add/remove/auto-reap) serialize on this so the failure detector and the UI
+        # never run two rebalances at once.
+        self._lock = threading.RLock()
+        # gossip-driven auto-heal (opt-in via start_failure_detector)
+        self._fd_running = False
+        self._fd_interval = 2.0
+        self._reap_after = 5.0
+        self._dead_since: dict[str, float] = {}
 
     # ---- RPC helpers ------------------------------------------------------
 
@@ -54,18 +68,78 @@ class Controller:
     # ---- membership operations -------------------------------------------
 
     def add_node(self, new_node: str) -> None:
-        self._emit(f"ADD node {new_node}: rebalancing shards onto it")
-        if new_node not in self.active:
-            self.active.append(new_node)
-        self._rebalance(compute_placement(self.active))
-        self._emit(f"ADD node {new_node}: done")
+        with self._lock:
+            self._emit(f"ADD node {new_node}: rebalancing shards onto it")
+            if new_node not in self.active:
+                self.active.append(new_node)
+            self._rebalance(compute_placement(self.active))
+            self._emit(f"ADD node {new_node}: done")
 
     def remove_node(self, node: str, dead: bool = False) -> None:
-        self._emit(f"REMOVE node {node} (dead={dead}): re-replicating its shards to restore RF")
-        if node in self.active:
-            self.active.remove(node)
-        self._rebalance(compute_placement(self.active), departing=node, dead=dead)
-        self._emit(f"REMOVE node {node}: done")
+        with self._lock:
+            self._emit(f"REMOVE node {node} (dead={dead}): re-replicating its shards to restore RF")
+            if node in self.active:
+                self.active.remove(node)
+            self._rebalance(compute_placement(self.active), departing=node, dead=dead)
+            self._emit(f"REMOVE node {node}: done")
+
+    # ---- gossip-driven auto-heal (failure detector) -----------------------
+
+    def start_failure_detector(self, interval: float = 2.0, reap_after: float = 5.0) -> None:
+        """Reconcile loop: read gossip liveness via node `status`; a node reported DEAD by a majority
+        of its live peers, and held dead past `reap_after`, is reaped via `remove_node(dead=True)` to
+        restore RF — no human action needed. The grace window lets a quick restart/deploy avoid an
+        expensive re-replication; the majority rule + alive-majority guard prevent acting on one
+        node's false suspicion or a partitioned minority."""
+        self._fd_interval = interval
+        self._reap_after = reap_after
+        self._fd_running = True
+        threading.Thread(target=self._fd_loop, daemon=True).start()
+
+    def stop(self) -> None:
+        self._fd_running = False
+
+    def _fd_loop(self) -> None:
+        while self._fd_running:
+            time.sleep(self._fd_interval)
+            try:
+                self._reconcile_once()
+            except Exception as e:  # never let the heal loop die
+                self._emit(f"failure-detector error: {e}")
+
+    def _reconcile_once(self) -> None:
+        with self._lock:
+            active = list(self.active)
+        if len(active) <= 1:
+            return
+        # Gather each live node's gossip view (status now carries it). A dead node won't respond.
+        views: dict[str, dict] = {}
+        for n in active:
+            res = self._call(n, "status", {})
+            if res.get("ok") and isinstance(res.get("members"), dict):
+                views[n] = res["members"]
+        # Only act while a MAJORITY is alive — otherwise a Raft config change can't commit anyway
+        # (and a partitioned minority must not reap the majority).
+        if not views or len(views) <= len(active) / 2:
+            return
+        now = time.time()
+        responders = list(views)
+        for cand in active:
+            others = [r for r in responders if r != cand]
+            if not others:
+                continue
+            dead_votes = sum(1 for r in others
+                             if views[r].get(cand, {}).get("state") == "dead")
+            if dead_votes > len(others) / 2:
+                first = self._dead_since.setdefault(cand, now)
+                if now - first >= self._reap_after:
+                    self._emit(f"FAILURE DETECTOR: {cand} reported DEAD by {dead_votes}/{len(others)}"
+                               f" peers for ≥{self._reap_after:.0f}s → auto-reaping it, restoring RF")
+                    self._dead_since.pop(cand, None)
+                    self.remove_node(cand, dead=True)
+                    return  # one membership change per tick; re-evaluate next time
+            else:
+                self._dead_since.pop(cand, None)  # not dead (recovered or never was)
 
     def _rebalance(self, target: dict[str, list[str]],
                    departing: Optional[str] = None, dead: bool = False) -> None:
