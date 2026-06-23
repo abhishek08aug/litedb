@@ -23,7 +23,7 @@ production-grade database.
 | Storage | WAL, MemTable, SSTable, LSM-Tree, B+ Tree | LevelDB, RocksDB, PostgreSQL |
 | Transactions | MVCC, snapshot isolation, VACUUM | PostgreSQL, MySQL InnoDB |
 | Query | SQL parser, query planner, executor | SQLite, DuckDB |
-| Distribution | Consistent hashing, async replication, Raft | Cassandra, etcd, CockroachDB |
+| Distribution | Consistent hashing, async replication, Raft, gossip discovery | Cassandra, etcd, CockroachDB |
 | Operations | PBKDF2 auth, RBAC, connection pool, rate limiter | PgBouncer, ProxySQL |
 | Observability | Prometheus metrics, slow query log, distributed tracing | Prometheus, Jaeger |
 
@@ -34,8 +34,10 @@ production-grade database.
 > requests to leaders (with a configurable replication factor), commit cross-shard transactions via
 > 2PC, recover in-doubt 2PC after a coordinator *or* participant crash (prepared intents are
 > replicated through Raft), and **add/remove nodes online** — shards (with their data) rebalance via
-> Raft membership changes. A live web dashboard shows cluster health, config, the consistent-hash
-> ring, the shard→node placement matrix, and one event feed per instance narrating its reasoning;
+> Raft membership changes. Nodes **discover each other via gossip** from a single seed (SWIM/Cassandra
+> style, not a static list), with locally-derived alive/suspect/dead liveness. A live web dashboard
+> shows cluster health, config, the consistent-hash ring, the shard→node placement matrix, the live
+> gossip membership matrix, and one event feed per instance narrating its reasoning;
 > you can kill/restart nodes, add/remove nodes, and watch failover + rebalancing. Launch it with
 > `python dashboard.py` or `java com.litedb.cluster.Dashboard`. It is a real end-to-end integration
 > on one machine; it is **not** hardened for the cross-machine failure matrix (replicated control
@@ -52,7 +54,7 @@ production-grade database.
 git clone https://github.com/abhishek08aug/litedb.git
 cd litedb/litedb-python
 
-# All 14 modules — WAL → MemTable → SSTable → LSM-Tree → Parser → Replication
+# All 15 modules — WAL → MemTable → SSTable → LSM-Tree → Parser → Replication → Gossip
 #                   → Transactions → B-Tree → SQL → Sharding → Raft → Auth → Metrics
 python run_demo.py
 ```
@@ -60,7 +62,7 @@ python run_demo.py
 Expected output:
 
 ```
-Results: 13 passed, 0 failed
+Results: 14 passed, 0 failed
 ```
 
 Run a single module directly:
@@ -181,6 +183,7 @@ litedb/                          ← repo root
 | `query_parser.py` | Command parser | Tokenize → parse → execute |
 | `server.py` | TCP server | Multi-client; pipelined protocol |
 | `replication.py` | Async replication | WAL streaming; primary/replica |
+| `gossip.py` | Gossip membership | SWIM/Cassandra-style; seed discovery; heartbeat liveness |
 
 ### Advanced — run via `run_demo.py`
 

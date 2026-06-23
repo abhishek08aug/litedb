@@ -30,6 +30,7 @@ public final class NodeServer {
     private final Map<String, Rpc.Handler> handlers = new LinkedHashMap<>();
     private final Rpc.Server server;
     private final TxnLog txnlog;
+    private final Gossip gossip;
     private final String dataDir;
     private volatile boolean running = false;
     // shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
@@ -41,6 +42,11 @@ public final class NodeServer {
         this.partitioner = ClusterConfig.makePartitioner();  // key -> shard (static)
         this.dataDir = ClusterConfig.nodeDataDir(nodeId);
         this.txnlog = new TxnLog(dataDir);
+
+        // Gossip: discover peers (and their liveness) from a SMALL seed set instead of the static
+        // pool. Membership learned here also feeds address resolution (with a static fallback).
+        this.gossip = new Gossip(nodeId, ClusterConfig.HOST, port, ClusterConfig.seedAddrs(nodeId),
+                this::gossipSend, m -> events.emit("gossip", m));
 
         this.placement = ClusterConfig.computePlacement(ClusterConfig.INITIAL_NODES);
         for (Map.Entry<String, List<String>> e : placement.entrySet()) {
@@ -55,6 +61,7 @@ public final class NodeServer {
         handlers.put("begin", p -> resp("ok", true, "read_ts", hlc.now()));
         handlers.put("status", this::onStatus);
         handlers.put("events", p -> events.since(p.get("after") == null ? 0 : num(p, "after")));
+        handlers.put("gossip", gossip::handle);
         handlers.put("shard_leader", this::onShardLeader);
         handlers.put("shard_write", p -> withShard(p, r -> r.commitWrite(writes(p), readTs(p), 3000)));
         handlers.put("shard_get", this::onShardGet);
@@ -122,13 +129,28 @@ public final class NodeServer {
         return (peerNode, kind, payload) -> {
             Map<String, Object> msg = new LinkedHashMap<>(payload);
             msg.put("shard", shardId);
-            return client.call(ClusterConfig.HOST, ClusterConfig.port(peerNode), kind, msg);
+            Gossip.Addr a = addrOf(peerNode);
+            return client.call(a.host, a.port, kind, msg);
         };
+    }
+
+    /** Resolve a node's address — prefer what gossip discovered, fall back to the static pool (so
+     * routing keeps working during the convergence window and in single-machine runs). */
+    private Gossip.Addr addrOf(String node) {
+        Gossip.Addr a = gossip.addrOf(node);
+        return a != null ? a : new Gossip.Addr(ClusterConfig.HOST, ClusterConfig.port(node));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> gossipSend(String host, int port, Map<String, Object> payload) {
+        Map<String, Object> r = client.call(host, port, "gossip", payload);
+        return Boolean.TRUE.equals(r.get("ok")) ? (Map<String, Object>) r.get("result") : null;
     }
 
     public void start() throws Exception {
         running = true;
         server.start();
+        gossip.start();
         for (ShardReplica r : shards.values()) r.start();
         Thread t = new Thread(this::sweepLoop, "txn-sweep");
         t.setDaemon(true);
@@ -171,6 +193,7 @@ public final class NodeServer {
     }
 
     public void stop() {
+        gossip.stop();
         for (ShardReplica r : shards.values()) r.stop();
         server.stop();
     }
@@ -186,7 +209,8 @@ public final class NodeServer {
                 return resp("ok", false, "error", e.getMessage());
             }
         }
-        Map<String, Object> r = client.call(ClusterConfig.HOST, ClusterConfig.port(node), method, payload);
+        Gossip.Addr a = addrOf(node);
+        Map<String, Object> r = client.call(a.host, a.port, method, payload);
         if (!Boolean.TRUE.equals(r.get("ok"))) return resp("ok", false, "error", r.get("error"));
         return (Map<String, Object>) r.get("result");
     }
@@ -375,7 +399,8 @@ public final class NodeServer {
             st.put("preferred", !placed.isEmpty() && placed.get(0).equals(nodeId));
             shardStatus.add(st);
         }
-        return resp("ok", true, "node", nodeId, "alive", true, "shards", shardStatus);
+        return resp("ok", true, "node", nodeId, "alive", true, "shards", shardStatus,
+                "members", gossip.view());
     }
 
     // ---- helpers ----------------------------------------------------------

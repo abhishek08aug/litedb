@@ -77,5 +77,29 @@ public final class ClusterConfig {
         return dataRoot() + "/" + nodeId;
     }
 
+    /** Bootstrap contacts for gossip: a SMALL set of well-known addresses (NOT the full pool). A
+     * joining node only needs to reach ONE of these to discover the whole cluster transitively — the
+     * single-machine stand-in for Cassandra `seeds:` / Consul `retry_join`. Override with
+     * LITEDB_CLUSTER_SEEDS='host:port,host:port'; default = the first two initial nodes (excluding self). */
+    public static List<Gossip.Addr> seedAddrs(String nodeId) {
+        List<Gossip.Addr> out = new ArrayList<>();
+        String raw = System.getenv("LITEDB_CLUSTER_SEEDS");
+        if (raw != null && !raw.trim().isEmpty()) {
+            for (String tok : raw.split(",")) {
+                tok = tok.trim();
+                if (tok.isEmpty()) continue;
+                int idx = tok.lastIndexOf(':');
+                out.add(new Gossip.Addr(tok.substring(0, idx), Integer.parseInt(tok.substring(idx + 1))));
+            }
+            return out;
+        }
+        int n = Math.min(2, INITIAL_NODES.size());
+        for (int i = 0; i < n; i++) {
+            String nid = INITIAL_NODES.get(i);
+            if (!nid.equals(nodeId)) out.add(new Gossip.Addr(HOST, port(nid)));
+        }
+        return out;
+    }
+
     private ClusterConfig() {}
 }

@@ -55,7 +55,8 @@ final class DashboardPage {
   .ev .cat{display:inline-block;min-width:74px;font-size:10px;text-transform:uppercase}
   .ev .node{color:var(--dim);font-size:10px}
   .election{color:#d29922}.leader{color:#3fb950}.vote{color:#39c5cf}.replication{color:#58a6ff}
-  .apply{color:#e6edf3}.routing{color:#bc8cff}.txn{color:#f0883e}.config{color:#79c0ff}
+  .apply{color:#e6edf3}.routing{color:#bc8cff}.txn{color:#f0883e}.config{color:#79c0ff}.gossip{color:#7ee787}
+  .gcell{font-weight:700}.gAlive{background:#132e1a;color:var(--ok)}.gSuspect{background:#3a2d12;color:var(--warn)}.gDead{background:#3a1416;color:var(--bad)}
   .nfoot{padding:6px 12px;border-top:1px solid var(--line)}
   .nfoot button{font-size:11px;padding:3px 8px;width:100%}
   .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px}
@@ -87,6 +88,8 @@ final class DashboardPage {
     <div class="card"><h3>Consistent-hash ring</h3><div id="ring"></div></div>
     <div class="card"><h3>Shard placement (live)</h3><div id="placement"></div></div>
   </div>
+  <div class="section-title">Gossip — peer discovery &amp; liveness (each row = what that node learned from a seed, no static list)</div>
+  <div class="card"><div id="gossip"></div></div>
   <div class="section-title">Instances — each panel narrates its own reasoning</div>
   <div class="nodes" id="grid"></div>
   <div class="section-title">Control plane - rebalancing log (add / remove node)</div>
@@ -112,7 +115,7 @@ async function poll(){
   active.forEach(n => { if(!(n in cursors)){ cursors[n]=0; feeds[n]=[]; } });
   const changed = JSON.stringify(active) !== JSON.stringify(ORDER);
   ORDER = active;
-  renderHeader(ov); renderConfig(ov); renderRing(ov); renderPlacement(ov); renderCtrl(ov);
+  renderHeader(ov); renderConfig(ov); renderRing(ov); renderPlacement(ov); renderCtrl(ov); renderGossip(ov);
   const grid = document.getElementById('grid');
   grid.style.gridTemplateColumns = `repeat(${ORDER.length},1fr)`;
   if(changed || grid.children.length !== ORDER.length){ grid.innerHTML=''; ORDER.forEach(n=>grid.appendChild(buildNode(n))); }
@@ -164,6 +167,28 @@ function renderRing(ov){
   document.getElementById('ring').innerHTML =
     `<svg width="190" height="190" viewBox="0 0 190 190">${paths}</svg>`+legend
     +`<div style="color:var(--dim);font-size:11px;margin-top:4px">keys hash onto the ring → the arc's shard owns them</div>`;
+}
+
+function renderGossip(ov){
+  const live=ov.live||{};
+  const subjects=new Set(ORDER);
+  ORDER.forEach(o=>{ const m=(live[o]||{}).members||{}; Object.keys(m).forEach(s=>subjects.add(s)); });
+  const cols=[...subjects].sort();
+  let html='<table><tr><th class="shard">observer ↓ / knows →</th>'+cols.map(s=>`<th>${s.replace('node-','n')}</th>`).join('')+'</tr>';
+  ORDER.forEach(o=>{
+    const m=(live[o]||{}).members||{}; const odown=!(live[o]||{}).alive;
+    html+=`<tr><td class="shard">${o.replace('node-','n')}${odown?' <span style="color:var(--bad)">(down)</span>':''}</td>`;
+    cols.forEach(s=>{
+      const e=m[s];
+      if(!e){ html+='<td class="cellNo">·</td>'; return; }
+      const cls=e.state==='alive'?'gAlive':(e.state==='suspect'?'gSuspect':'gDead');
+      const mark=s===o?'●':(e.state==='alive'?'✓':(e.state==='suspect'?'?':'✗'));
+      html+=`<td class="gcell ${cls}" title="${s}: ${e.state}, heartbeat ${e.heartbeat}, gen ${e.generation}">${mark}</td>`;
+    });
+    html+='</tr>';
+  });
+  html+='</table><div style="color:var(--dim);font-size:11px;margin-top:6px">✓ alive · ? suspect · ✗ dead · ● self · · not yet discovered — each node bootstraps from one seed and learns the rest via gossip</div>';
+  document.getElementById('gossip').innerHTML=html;
 }
 
 function renderPlacement(ov){

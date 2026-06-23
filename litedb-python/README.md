@@ -76,6 +76,7 @@ No external dependencies — pure Python stdlib only.
 | `query_parser.py` | Parse & execute SET/GET/DELETE/SCAN commands | Redis protocol |
 | `server.py` | TCP server — multi-client, pipelined commands | Redis, Memcached |
 | `replication.py` | Async WAL streaming to replica node | MySQL replication, Postgres streaming |
+| `gossip.py` | SWIM/Cassandra-style gossip — seed discovery + heartbeat liveness | Cassandra, Consul/Serf |
 
 ### Advanced Modules — Production Features
 
@@ -95,7 +96,7 @@ No external dependencies — pure Python stdlib only.
 |------|---------|
 | `_loader.py` | Import helper — adds module dir to `sys.path` |
 | `client.py` | TCP client for `server.py` — interactive REPL or `--demo` smoke test |
-| `run_demo.py` | Comprehensive demo runner — all 14 modules (foundational + advanced) |
+| `run_demo.py` | Comprehensive demo runner — all 15 modules (foundational + advanced) |
 
 ---
 
@@ -104,7 +105,7 @@ No external dependencies — pure Python stdlib only.
 ```bash
 # No installation needed — pure Python 3.10+ stdlib
 
-# Run all 14 modules:
+# Run all 15 modules:
 python run_demo.py
 
 # Run a single module by name:
@@ -203,8 +204,9 @@ LITEDB_CLUSTER_RF=2 python dashboard.py # 3 instances, replication factor 2
 
 The dashboard shows the whole system centrally: health badge, configuration, the **consistent-hash
 ring** (which shard owns which arc of the keyspace), the **shard → node placement matrix**
-(leader / follower / not-hosted, live), one **event feed per instance**, and a **merged system
-stream**. The same cluster is implemented in Java (`com.litedb.cluster.Dashboard`).
+(leader / follower / not-hosted, live), the **gossip membership matrix** (what each node has
+discovered + alive/suspect/dead), one **event feed per instance**, and a **merged system stream**.
+The same cluster is implemented in Java (`com.litedb.cluster.Dashboard`).
 
 End to end, it demonstrates:
 
@@ -228,6 +230,10 @@ End to end, it demonstrates:
 - **Dynamic membership + rebalancing** — add a node (shards + their data rebalance onto it via Raft
   membership changes + catch-up) or remove one (its shards re-replicate to restore RF), online,
   driven by a control plane (`controller.py`) and a `+ Add node` / `- Remove node` button in the UI
+- **Gossip discovery** — a node joins knowing only a **seed** address (not the static list) and learns
+  the cluster via SWIM/Cassandra-style gossip (`gossip.py`); liveness (alive/suspect/dead) is derived
+  locally from heartbeat freshness. This is *not* Raft — it's the decentralized membership substrate
+  underneath it; node addresses resolve from gossip, falling back to the static pool
 
 Each instance has its own dashboard panel streaming its reasoning — election timeouts, accepting a
 leader, routing by consistent hashing, replicating, applying, running 2PC — so you can *watch* the
@@ -244,6 +250,7 @@ distributed logic instead of reading about it.
 | `cluster_client.py` | contact-any-node client |
 | `txn_log.py` | coordinator's durable transaction log (2PC recovery) |
 | `controller.py` | control plane: placement + online rebalancing on node add/remove |
+| `gossip.py` | SWIM/Cassandra-style gossip: seed-based peer discovery + local failure detection |
 | `events.py` / `dashboard.py` | per-instance event log + launcher + live dashboard |
 
 ```bash
@@ -252,6 +259,7 @@ python cluster_smoke.py             # 3 real processes, full scenario (set LITED
 python recovery_smoke.py            # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py # 2PC participant-leader-crash recovery (replicated intents)
 python rebalance_smoke.py           # add a node (data rebalances on) then remove it (re-replicates)
+python gossip_smoke.py              # seed-based discovery + failure detection (3 nodes, one seed)
 ```
 
 **Scope (honest):** this runs many instances on **one machine**. It is a faithful integration of
@@ -292,12 +300,13 @@ for exactly what is built vs. what remains.
 16. **Virtual Nodes** — even load distribution across physical nodes
 17. **Async Replication** — stream WAL entries to replicas
 18. **Raft Consensus** — leader election + log replication for strong consistency
+19. **Gossip Membership** — SWIM/Cassandra-style seed discovery + local heartbeat failure detection
 
 ### Operations
-19. **RBAC** — roles grant permissions; users get roles
-20. **PBKDF2 Auth** — 260K-iteration password hashing; constant-time comparison
-21. **Connection Pool** — reuse expensive TCP connections; min/max size; health checks
-22. **Token Bucket** — rate limiting with burst allowance
+20. **RBAC** — roles grant permissions; users get roles
+21. **PBKDF2 Auth** — 260K-iteration password hashing; constant-time comparison
+22. **Connection Pool** — reuse expensive TCP connections; min/max size; health checks
+23. **Token Bucket** — rate limiting with burst allowance
 23. **Prometheus Metrics** — counters, gauges, histograms with labels
 24. **Slow Query Log** — capture queries exceeding latency threshold
 25. **Distributed Tracing** — trace spans across components with parent/child relationships

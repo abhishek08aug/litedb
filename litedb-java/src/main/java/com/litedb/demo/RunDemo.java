@@ -3,6 +3,8 @@ package com.litedb.demo;
 import com.litedb.auth.AuthManager;
 import com.litedb.auth.AuthManager.*;
 import com.litedb.btree.BPlusTree;
+import com.litedb.cluster.Gossip;
+import com.litedb.cluster.Rpc;
 import com.litedb.memtable.MemTable;
 import com.litedb.metrics.MetricsRegistry;
 import com.litedb.metrics.MetricsRegistry.*;
@@ -50,6 +52,81 @@ public class RunDemo {
     private static void step(int n, String desc) {
         System.out.println("\n[Step " + n + "] " + desc);
         System.out.println("-".repeat(50));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String gossipState(Gossip g, String subject) {
+        Map<String, Object> e = (Map<String, Object>) g.view().get(subject);
+        return e == null ? "unknown" : (String) e.get("state");
+    }
+
+    /** Spin up 3 gossip nodes where B and C know ONLY node-A's seed, watch them all discover each
+     * other, then kill node-C and watch A and B detect it dead. Cassandra/Consul-style membership. */
+    @SuppressWarnings("unchecked")
+    private static void demoGossip() throws Exception {
+        banner("MODULE 8: Gossip — Discovery & Failure Detection");
+        System.out.println("""
+  Gossip lets a node JOIN knowing only a seed address — not the whole node list.
+  Nodes swap membership tables with random peers; within a few rounds everyone has
+  discovered everyone (transitively). Liveness is derived locally from heartbeat
+  freshness. This is Cassandra/Consul-style membership — decentralized, NOT Raft.""");
+
+        int base = 19500;
+        String[] names = {"node-A", "node-B", "node-C"};
+        Map<String, Gossip> g = new LinkedHashMap<>();
+        Map<String, Rpc.Server> srv = new LinkedHashMap<>();
+        List<Rpc.Client> clients = new ArrayList<>();
+
+        for (int i = 0; i < names.length; i++) {
+            String id = names[i];
+            int port = base + i;
+            List<Gossip.Addr> seeds = i == 0 ? List.of()
+                    : List.of(new Gossip.Addr("127.0.0.1", base));   // B and C: node-A only
+            Rpc.Client client = new Rpc.Client(1000);
+            clients.add(client);
+            Gossip.Sender send = (host, p, payload) -> {
+                Map<String, Object> r = client.call(host, p, "gossip", payload);
+                return Boolean.TRUE.equals(r.get("ok")) ? (Map<String, Object>) r.get("result") : null;
+            };
+            Gossip gossip = new Gossip(id, "127.0.0.1", port, seeds, send, null, 0.3, 1.0, 2.0, 2);
+            Map<String, Rpc.Handler> handlers = new LinkedHashMap<>();
+            handlers.put("gossip", gossip::handle);
+            Rpc.Server server = new Rpc.Server(port, handlers);
+            server.start();
+            gossip.start();
+            g.put(id, gossip);
+            srv.put(id, server);
+        }
+
+        step(14, "3 nodes start — node-A is the seed; B and C are told ONLY node-A's address");
+        for (int t = 0; t < 80; t++) {
+            Thread.sleep(250);
+            boolean all = true;
+            for (Gossip gg : g.values()) if (gg.view().size() < 3) { all = false; break; }
+            if (all) break;
+        }
+        for (Map.Entry<String, Gossip> e : g.entrySet()) {
+            List<String> known = new ArrayList<>(e.getValue().view().keySet());
+            Collections.sort(known);
+            System.out.println("  " + e.getKey() + " discovered: " + known);
+        }
+
+        step(15, "Kill node-C — node-A and node-B age out its heartbeat and mark it DEAD");
+        g.get("node-C").stop();
+        srv.get("node-C").stop();
+        for (int t = 0; t < 80; t++) {
+            Thread.sleep(250);
+            if ("dead".equals(gossipState(g.get("node-A"), "node-C"))
+                    && "dead".equals(gossipState(g.get("node-B"), "node-C"))) break;
+        }
+        for (String o : new String[]{"node-A", "node-B"}) {
+            System.out.println("  " + o + " now sees node-C as: " + gossipState(g.get(o), "node-C"));
+        }
+        g.get("node-A").stop();
+        g.get("node-B").stop();
+        srv.get("node-A").stop();
+        srv.get("node-B").stop();
+        for (Rpc.Client c : clients) c.close();
     }
 
     // ------------------------------------------------------------------ //
@@ -254,9 +331,14 @@ public class RunDemo {
         }
 
         // ============================================================
-        // MODULE 8: Metrics Summary
+        // MODULE 8: Gossip Discovery
         // ============================================================
-        banner("MODULE 8: Metrics");
+        demoGossip();
+
+        // ============================================================
+        // MODULE 9: Metrics Summary
+        // ============================================================
+        banner("MODULE 9: Metrics");
 
         // Simulate some more ops for realistic numbers
         Random rng = new Random(42);
@@ -313,9 +395,10 @@ public class RunDemo {
         System.out.println("    ✓ Replication Log               — HA");
         System.out.println("    ✓ Consistent Hashing            — sharding");
         System.out.println("    ✓ Raft Consensus                — distributed agreement");
+        System.out.println("    ✓ Gossip Membership             — discovery + failure detection");
         System.out.println("    ✓ Auth + Connection Pool        — security");
         System.out.println("    ✓ Metrics Registry              — observability");
-        System.out.println("\n  Total: 13 core database subsystems, ~3000 lines of Java.");
+        System.out.println("\n  Total: 14 core database subsystems, ~3000 lines of Java.");
         System.out.println("\n  You now understand how MySQL, PostgreSQL, Cassandra,");
         System.out.println("  MongoDB, CockroachDB, and DynamoDB work under the hood.");
         System.out.println("\n[LiteDB Demo Complete]");

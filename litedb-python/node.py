@@ -28,8 +28,10 @@ from cluster_config import (
     compute_placement,
     make_partitioner,
     node_data_dir,
+    seed_addrs,
 )
 from events import EventLog
+from gossip import Gossip
 from hlc import HLC
 from raft_node import RPC_TIMEOUT
 from rpc import RPCClient, RPCServer
@@ -53,6 +55,14 @@ class NodeServer:
         self.txnlog = TxnLog(self.data_dir)
         self._running = False
 
+        # Gossip: discover peers (and their liveness) from a SMALL seed set instead of the static
+        # pool. Membership learned here also feeds address resolution (with a static fallback).
+        self.gossip = Gossip(
+            node_id, [self.host, self.port], seed_addrs(node_id),
+            send_fn=self._gossip_send,
+            on_event=lambda m: self.events.emit("gossip", m),
+        )
+
         # shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
         # Starts from the initial even placement; a node added later starts empty and is told what
         # to host + what the placement is.
@@ -73,6 +83,7 @@ class NodeServer:
             "begin": self._on_begin,
             "status": self._on_status,
             "events": lambda p: self.events.since(p.get("after", 0)),
+            "gossip": lambda p: self.gossip.handle(p),
             "shard_leader": self._on_shard_leader,
             # internal shard ops (coordinator -> shard leader); guarded for shards not hosted here
             "shard_write": lambda p: self._with_shard(
@@ -132,9 +143,18 @@ class NodeServer:
         self.placement = {s: list(ns) for s, ns in p["placement"].items()}
         return {"ok": True}
 
+    def _addr(self, node: str) -> list:
+        """Resolve a node's address — prefer what gossip discovered, fall back to the static pool
+        (so routing keeps working during the convergence window and in single-machine runs)."""
+        return self.gossip.addr_of(node) or list(NODES[node])
+
+    def _gossip_send(self, host: str, port: int, payload: dict) -> Optional[dict]:
+        resp = self.client.call(host, port, "gossip", payload, timeout=1.0)
+        return resp["result"] if resp.get("ok") else None
+
     def _make_send(self, shard_id: str):
         def send(peer_node: str, kind: str, payload: dict) -> dict:
-            host, port = NODES[peer_node]
+            host, port = self._addr(peer_node)
             msg = dict(payload)
             msg["shard"] = shard_id  # tell the peer which group this RPC is for
             return self.client.call(host, port, kind, msg, timeout=RPC_TIMEOUT)
@@ -143,6 +163,7 @@ class NodeServer:
     def start(self) -> None:
         self._running = True
         self.server.start()
+        self.gossip.start()
         for rep in self.shards.values():
             rep.start()
         threading.Thread(target=self._sweep_loop, daemon=True).start()
@@ -180,6 +201,7 @@ class NodeServer:
                 self._drive_txn(rec)
 
     def stop(self) -> None:
+        self.gossip.stop()
         for rep in self.shards.values():
             rep.stop()
         self.server.stop()
@@ -192,7 +214,7 @@ class NodeServer:
         """Invoke a handler on `node`, unwrapping the RPC envelope. Local calls dispatch directly."""
         if node == self.node_id:
             return self.handlers[method](payload)
-        host, port = NODES[node]
+        host, port = self._addr(node)
         resp = self.client.call(host, port, method, payload, timeout=FORWARD_TIMEOUT)
         if not resp.get("ok"):
             return {"ok": False, "error": resp.get("error", "rpc_failed")}
@@ -395,7 +417,8 @@ class NodeServer:
             placed = self.placement.get(s, [])
             st["preferred"] = (bool(placed) and placed[0] == self.node_id)
             shard_status.append(st)
-        return {"ok": True, "node": self.node_id, "alive": True, "shards": shard_status}
+        return {"ok": True, "node": self.node_id, "alive": True, "shards": shard_status,
+                "members": self.gossip.view()}
 
 
 def main() -> None:

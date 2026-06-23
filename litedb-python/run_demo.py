@@ -28,10 +28,12 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _dir)
 
 
+from gossip import ALIVE, DEAD, Gossip  # type: ignore
 from lsm_engine import LSMEngine  # type: ignore
 from memtable import TOMBSTONE, MemTable  # type: ignore
 from query_parser import QueryParser  # type: ignore
 from replication import ReplicationPublisher, ReplicationSubscriber  # type: ignore
+from rpc import RPCClient, RPCServer  # type: ignore
 from sstable import SSTableWriter  # type: ignore
 from wal import WALEntry, WriteAheadLog  # type: ignore
 
@@ -344,6 +346,70 @@ def demo_replication():
     publisher.stop()
 
 
+def demo_gossip():
+    separator("PART 7: Gossip — Discovery & Failure Detection")
+    print("""
+  Gossip lets a node JOIN knowing only a seed address — not the whole node list.
+  It periodically swaps membership tables with random peers; within a few rounds
+  everyone has discovered everyone (transitively). Liveness is derived locally from
+  how recently each peer's heartbeat advanced. This is how Cassandra / Consul / Serf
+  do membership — decentralized and eventually consistent, NOT Raft.
+    """)
+
+    base = 18400
+    names = ["node-A", "node-B", "node-C"]
+    clients: list[RPCClient] = []
+    servers: dict[str, RPCServer] = {}
+    nodes: dict[str, Gossip] = {}
+
+    def make(node_id: str, port: int, seeds: list):
+        client = RPCClient(timeout=1.0)
+        clients.append(client)
+
+        def send(host: str, p: int, payload: dict):
+            r = client.call(host, p, "gossip", payload, timeout=1.0)
+            return r["result"] if r.get("ok") else None
+
+        g = Gossip(node_id, ["127.0.0.1", port], seeds, send_fn=send,
+                   gossip_interval=0.3, suspect_after=1.0, dead_after=2.0)
+        srv = RPCServer("127.0.0.1", port, {"gossip": lambda pl: g.handle(pl)})
+        srv.start()
+        g.start()
+        servers[node_id] = srv
+        nodes[node_id] = g
+
+    section("Starting 3 nodes — node-A is the seed; B and C are told ONLY node-A's address")
+    make("node-A", base + 0, [])
+    make("node-B", base + 1, [["127.0.0.1", base + 0]])
+    make("node-C", base + 2, [["127.0.0.1", base + 0]])
+
+    for _ in range(60):
+        time.sleep(0.25)
+        if all(set(g.view()) == set(names) and all(e["state"] == ALIVE for e in g.view().values())
+               for g in nodes.values()):
+            break
+
+    section("Converged membership (each node discovered the others from one seed)")
+    for nid, g in nodes.items():
+        print(f"  {nid}: knows {sorted(g.view())}")
+
+    section("Killing node-C — A and B age out its heartbeat and mark it DEAD")
+    nodes["node-C"].stop()
+    servers["node-C"].stop()
+    for _ in range(60):
+        time.sleep(0.25)
+        if all(nodes[o].view().get("node-C", {}).get("state") == DEAD for o in ("node-A", "node-B")):
+            break
+    for o in ("node-A", "node-B"):
+        print(f"  {o} now sees node-C as: {nodes[o].view().get('node-C', {}).get('state')}")
+
+    for nid in ("node-A", "node-B"):
+        nodes[nid].stop()
+        servers[nid].stop()
+    for c in clients:
+        c.close()
+
+
 # ======================================================================= #
 #  ADVANCED MODULES (subprocess runner)                                    #
 # ======================================================================= #
@@ -387,7 +453,8 @@ def run_advanced_module(name: str, filename: str, title: str) -> bool:
 #  MAIN                                                                    #
 # ======================================================================= #
 
-FOUNDATIONAL_MODULES = ["wal", "memtable", "sstable", "lsm_engine", "query_parser", "replication"]
+FOUNDATIONAL_MODULES = ["wal", "memtable", "sstable", "lsm_engine", "query_parser", "replication",
+                        "gossip"]
 ADVANCED_MODULE_NAMES = [name for name, _, _ in ADVANCED_MODULES]
 ALL_MODULE_NAMES = FOUNDATIONAL_MODULES + ADVANCED_MODULE_NAMES
 
@@ -414,6 +481,7 @@ def main():
     4. LSM Engine   — combines all three + compaction
     5. Query Parser — text command → engine operation
     6. Replication  — async WAL streaming to replica
+    7. Gossip       — seed-based peer discovery + failure detection
 
   Advanced modules (self-contained):
     7.  Transactions — MVCC + optimistic (OCC) + pessimistic (2PL) locking
@@ -440,6 +508,7 @@ def main():
             ("lsm_engine",   lambda: demo_lsm_engine(data_dir)),
             ("query_parser", lambda: demo_query_parser(data_dir)),
             ("replication",  lambda: demo_replication()),
+            ("gossip",       lambda: demo_gossip()),
         ]
 
         for name, fn in foundational:

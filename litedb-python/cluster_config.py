@@ -49,5 +49,24 @@ def compute_placement(nodes: list[str], rf: int | None = None) -> dict[str, list
             for i in range(len(SHARDS))}
 
 
+def seed_addrs(node_id: str) -> list[list]:
+    """Bootstrap contacts for gossip: a SMALL set of well-known addresses (NOT the full pool). A
+    joining node only needs to reach ONE of these to discover the whole cluster transitively. This
+    is the single-machine stand-in for Cassandra `seeds:` / Consul `retry_join`.
+
+    Override with LITEDB_CLUSTER_SEEDS='host:port,host:port'; default = the first two initial nodes
+    (two seeds so losing one doesn't break bootstrap), excluding self."""
+    raw = os.environ.get("LITEDB_CLUSTER_SEEDS", "").strip()
+    if raw:
+        out = []
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if tok:
+                host, port = tok.rsplit(":", 1)
+                out.append([host, int(port)])
+        return out
+    return [list(NODES[n]) for n in INITIAL_NODES[:2] if n != node_id]
+
+
 def node_data_dir(node_id: str) -> str:
     return os.path.join(DATA_ROOT, node_id)

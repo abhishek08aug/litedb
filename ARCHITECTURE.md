@@ -138,10 +138,24 @@ replica recovers. Committed entries apply deterministically to that shard's MVCC
 > parallel. That's what makes sharding actually scale writes.
 
 ### Routing — [`node.py`](litedb-python/node.py), [`cluster_client.py`](litedb-python/cluster_client.py)
-A client contacts *any* node. That node computes the key's shard (same static map everyone shares),
-resolves the shard's leader, and either serves it or forwards. With replication factor < node count,
-a node may not host a shard at all — it then asks the shard's replica nodes for the leader. So
-routing works for any RF.
+A client contacts *any* node. That node computes the key's shard (the same partition map everyone
+shares), resolves the shard's leader, and either serves it or forwards. Node *addresses* come from
+gossip (below), falling back to the static pool. With replication factor < node count, a node may not
+host a shard at all — it then asks the shard's replica nodes for the leader. So routing works for any RF.
+
+### Discovery — gossip membership, [`gossip.py`](litedb-python/gossip.py)
+A node doesn't need the full node list to join — only a **seed** (one or two well-known addresses).
+It runs a **SWIM/Cassandra-style gossip** loop: every ~1s it anti-entropy push-pulls its membership
+table with a few random peers, merging each entry by `(generation, heartbeat)`. From a single seed it
+**transitively** learns every node (the seed tells a newcomer about everyone it already knows), and
+everyone learns the newcomer. **Liveness is derived locally** — if a peer's heartbeat stops advancing
+it ages `alive → suspect → dead` (the Cassandra split: gossip carries heartbeats, the failure detector
+is local); a restart bumps `generation`, so a returning node outranks its own stale heartbeat and is
+re-adopted as alive automatically. This is deliberately **not Raft**: Raft gives strong consistency for
+a *known* group; gossip discovers and disseminates *who* the group is — leaderless, eventually
+consistent, partition-tolerant. The static address book is now just a *bootstrap seed source*, not the
+source of truth. The dashboard renders a live membership matrix (what each node has discovered, and
+each peer's alive/suspect/dead state).
 
 ### Cross-shard transactions — 2PC + HLC
 A single Raft commit is atomic only *within* one shard. A write spanning shards runs **two-phase
@@ -233,6 +247,7 @@ mirror: add a replacement replica elsewhere to restore RF, then drop the departi
 | Replicated intents (Percolator) + readiness gate | prepared state survives a leader change → correct recovery | extra Raft round-trip per prepare |
 | Raft config changes, one server at a time | safe membership change (majorities overlap); enables online add/remove + rebalancing | single-server only (no joint consensus); naive even-spread balancer |
 | Single controller / placement driver | simple authority for placement + rebalancing | SPOF for control ops (not data); production replicates or decentralizes it |
+| Gossip discovery (SWIM/Cassandra-style) | join from one seed, not a full static list; decentralized, partition-tolerant liveness | eventually consistent (not authoritative); cross-machine still needs a stable seed/DNS; the dead verdict isn't yet auto-wired to trigger re-replication |
 
 ---
 
@@ -262,4 +277,5 @@ python cluster_smoke.py            # partitioning, multi-raft, 2PC, failover
 python recovery_smoke.py           # 2PC coordinator-crash recovery
 python participant_recovery_smoke.py   # 2PC participant-leader-crash recovery
 python rebalance_smoke.py          # add a node (data rebalances on) then remove it (re-replicates)
+python gossip_smoke.py             # seed-based discovery + failure detection (3 nodes, one seed)
 ```

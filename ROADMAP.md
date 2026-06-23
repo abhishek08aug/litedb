@@ -48,15 +48,20 @@ Both `litedb-python/` and `litedb-java/` (`com.litedb.cluster`) implement the fu
   the change commits) + a **control plane** (`controller.py` / `Controller.java`): add a node and
   shards (with their data) rebalance onto it via Raft catch-up; remove a node and its shards
   re-replicate to restore RF — online, data intact
+- **Gossip-based discovery** — nodes join from a small **seed** set (not a static full list) and learn
+  the whole cluster via **SWIM/Cassandra-style gossip** (`gossip.py` / `Gossip.java`); weak liveness
+  (alive/suspect/dead) is derived locally from heartbeat freshness, so the static address book is now
+  just a bootstrap seed source, not the source of truth
 - **Rich central dashboard** — health, config, consistent-hash ring, shard→node placement matrix,
+  the live gossip membership matrix (what each node discovered + alive/suspect/dead),
   one event feed per instance + a merged system stream; kill/restart **and add/remove** nodes from the
   UI, with a control-plane rebalancing log
 
 **Run it:** `python dashboard.py` or `java com.litedb.cluster.Dashboard` → http://127.0.0.1:7080
 (Java: 7180). **Tests:** `pytest test_distributed.py`; `python cluster_smoke.py` /
-`recovery_smoke.py` / `participant_recovery_smoke.py` / `rebalance_smoke.py`; Java `ClusterSmoke` /
-`ClusterRecoverySmoke` / `ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke`. Set
-`LITEDB_CLUSTER_RF=2` for replication factor 2.
+`recovery_smoke.py` / `participant_recovery_smoke.py` / `rebalance_smoke.py` / `gossip_smoke.py`; Java
+`ClusterSmoke` / `ClusterRecoverySmoke` / `ClusterParticipantRecoverySmoke` / `ClusterRebalanceSmoke` /
+`GossipSmoke`. Set `LITEDB_CLUSTER_RF=2` for replication factor 2.
 
 The remaining gap is no longer *integration* — it is **cross-machine hardening**.
 
@@ -94,12 +99,16 @@ named gap for production. Listed so the boundary is explicit, not hidden.
 - **Fixed shards, no range split/merge.** The shard set is static; there is no rebalancing as data
   grows or nodes join/leave.
 - **Membership change is single-server only.** Add/remove one voter at a time is implemented; there's
-  no joint-consensus (multi-server) change, no learner-then-promote phase, and no automatic
-  failure-detector that triggers re-replication (the controller drives removal explicitly).
+  no joint-consensus (multi-server) change and no learner-then-promote phase. Gossip now provides a
+  failure detector, but it is **not yet wired to trigger re-replication automatically** — the
+  controller still drives removal explicitly.
 - **Snapshot install is log-based.** A far-behind replica catches up by log replication, not by
   shipping a compacted snapshot — fine for small logs, not for large state.
-- **Static service discovery.** Node addresses come from shared config; no gossip / failure
-  detector across machines.
+- **Seed-based discovery, single-machine seeds.** Nodes now discover each other via **gossip** from a
+  small seed set (no static full list) and derive liveness locally — but the seed addresses still come
+  from shared single-machine config; cross-machine you'd point seeds at stable DNS/IPs. The gossip
+  "dead" verdict is surfaced (and shown in the dashboard) but not yet auto-wired to trigger
+  re-replication.
 - **Not adversarially tested.** No Jepsen / partition / fault-injection suite; correctness is shown
   by scripted scenarios, not proven under the full failure matrix.
 
@@ -142,9 +151,10 @@ Legend: **[x]** = built (single-machine); **[ ]** = remaining.
 
 ### 4. Cluster lifecycle & membership
 - [x] Automated failover end-to-end (Raft election → client-visible leader change)
-- [ ] Gossip / membership, heartbeats, failure detection across machines
+- [x] Gossip membership + heartbeats + local failure detection (SWIM/Cassandra-style, seed-based discovery)
 - [x] Raft membership changes (single-server) + online rebalancing on node add/remove
-- [ ] Gossip / heartbeat failure detector to trigger re-replication automatically (controller-driven today)
+- [ ] Wire the gossip failure detector to trigger re-replication automatically (controller-driven today)
+- [ ] Cross-machine gossip hardening: stable seed/DNS discovery, phi-accrual detector, partition handling
 - [ ] Joint-consensus (multi-server) changes; learner-then-promote to avoid catch-up stalls
 - [ ] Online schema changes / migrations propagated cluster-wide; catalog consistency
 
