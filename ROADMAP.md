@@ -112,11 +112,11 @@ named gap for production. Listed so the boundary is explicit, not hidden.
 - **Membership change is single-server only.** Add/remove one voter at a time is implemented; there's
   no joint-consensus (multi-server) change and no learner-then-promote phase. Death-triggered
   re-replication is now **automatic** (the controller's gossip failure detector reaps a confirmed-dead
-  node and restores RF). A reaped node can **rejoin cleanly** — pre-vote stops its stale shard replicas
-  from disrupting the healthy groups (`rejoin_smoke.py` / `RejoinSmoke.java`) — but it is not yet
-  *auto*-re-added (bringing capacity back is a manual `+ Add node`), and the rejoining node still keeps
-  orphaned stale replicas it's no longer a voter of (harmless under pre-vote; explicit fencing/wipe is
-  the cleanup that remains).
+  node and restores RF). A reaped node **rejoins cleanly**: pre-vote stops its stale shard replicas from
+  disrupting the healthy groups, and a per-node **fence loop** then drops + wipes any replica the PD no
+  longer lists it as a voter of — so no orphans linger (`rejoin_smoke.py` / `RejoinSmoke.java` assert it
+  hosts only shards it's a voter of). The remaining gap is that it is not yet *auto*-re-added — bringing
+  capacity back is a manual `+ Add node`.
 - **Snapshot install is log-based.** A far-behind replica catches up by log replication, not by
   shipping a compacted snapshot — fine for small logs, not for large state.
 - **Seed-based discovery, single-machine seeds.** Nodes discover each other via **gossip** from a

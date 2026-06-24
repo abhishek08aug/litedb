@@ -16,6 +16,8 @@ Responsibilities:
 Run as a process:  python node.py <node-id>
 """
 
+import os
+import shutil
 import sys
 import threading
 import time
@@ -56,6 +58,11 @@ class NodeServer:
         self.data_dir = node_data_dir(node_id)
         self.txnlog = TxnLog(self.data_dir)
         self._running = False
+        # fencing: a rejoining node may resurrect stale replicas of shards it's no longer a voter of.
+        # Pre-vote keeps them harmless; the fence loop then drops + wipes them. `_orphan_since`
+        # debounces so we don't fence during a transient (e.g. a shard mid-add).
+        self._orphan_since: dict[str, float] = {}
+        self._fence_after = 4.0
 
         # Gossip: discover peers (and their liveness) from a SMALL seed set instead of the static
         # pool. Membership learned here also feeds address resolution (with a static fallback).
@@ -136,11 +143,59 @@ class NodeServer:
         return {"ok": True}
 
     def _on_drop_shard(self, p: dict) -> dict:
-        rep = self.shards.pop(p["shard"], None)
+        shard = p["shard"]
+        rep = self.shards.pop(shard, None)
         if rep is not None:
             rep.stop()
-            self.events.emit("config", f"dropped my replica of {p['shard']} (no longer assigned here)")
+            self._wipe_shard_files(shard)  # no longer hosting it → wipe, so a re-add starts clean
+            self.events.emit("config", f"dropped + wiped my replica of {shard} (no longer assigned here)")
         return {"ok": True}
+
+    def _wipe_shard_files(self, shard: str) -> None:
+        """Delete a shard's on-disk state on this node (its MVCC/LSM data dir + its Raft log dir), so
+        a fenced/dropped replica can't resurrect stale state on a later restart."""
+        for sub in (f"shard-{shard}-data", f"shard-{shard}-raft"):
+            shutil.rmtree(os.path.join(self.data_dir, sub), ignore_errors=True)
+
+    # ------------------------------------------------------------------ #
+    #  Fencing — drop + wipe replicas this node is no longer a voter of    #
+    # ------------------------------------------------------------------ #
+
+    def _pd_placement(self) -> Optional[dict]:
+        """The PD's authoritative shard→voters placement, or None if no PD replica answered."""
+        for n in PD_NODES:
+            res = self._call(n, "pd_status", {})
+            if res.get("ok") and isinstance(res.get("placement"), dict):
+                return res["placement"]
+        return None
+
+    def _fence_loop(self) -> None:
+        time.sleep(3.0)  # let the PD elect and our own replicas come up first
+        while self._running:
+            try:
+                self._fence_orphans()
+            except Exception as e:
+                self.events.emit("config", f"fence error: {e}")
+            time.sleep(2.0)
+
+    def _fence_orphans(self) -> None:
+        placement = self._pd_placement()
+        if placement is None:
+            return  # PD unreachable — never fence on a guess
+        now = time.time()
+        for shard in list(self.shards):
+            if self.node_id in placement.get(shard, []):
+                self._orphan_since.pop(shard, None)
+                continue
+            first = self._orphan_since.setdefault(shard, now)
+            if now - first >= self._fence_after:
+                self._orphan_since.pop(shard, None)
+                self.events.emit("config", f"FENCING orphan replica of {shard}: the PD no longer "
+                                           f"lists me as a voter → stopping and wiping it")
+                rep = self.shards.pop(shard, None)
+                if rep is not None:
+                    rep.stop()
+                self._wipe_shard_files(shard)
 
     def _on_reconfigure(self, p: dict) -> dict:
         rep = self.shards.get(p["shard"])
@@ -195,6 +250,7 @@ class NodeServer:
         for rep in self.shards.values():
             rep.start()
         threading.Thread(target=self._sweep_loop, daemon=True).start()
+        threading.Thread(target=self._fence_loop, daemon=True).start()
 
     def _sweep_loop(self) -> None:
         """Drives in-doubt 2PC to completion. On restart it (a) re-stages any txns this node had

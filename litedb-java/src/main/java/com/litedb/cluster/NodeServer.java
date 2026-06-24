@@ -34,6 +34,10 @@ public final class NodeServer {
     private final Pd pd;   // placement-driver Raft replica; non-null only on PD_NODES
     private final String dataDir;
     private volatile boolean running = false;
+    // fencing: a rejoining node may resurrect stale replicas of shards it's no longer a voter of;
+    // pre-vote keeps them harmless, the fence loop then drops + wipes them (orphanSince debounces).
+    private final Map<String, Long> orphanSince = new LinkedHashMap<>();
+    private static final long FENCE_AFTER_MS = 4000;
     // shard -> replica nodes. Dynamic: the controller updates it as nodes are added/removed.
     private volatile Map<String, List<String>> placement;
 
@@ -112,12 +116,29 @@ public final class NodeServer {
     }
 
     private Map<String, Object> onDropShard(Map<String, Object> p) {
-        ShardReplica rep = shards.remove(p.get("shard"));
+        String shard = (String) p.get("shard");
+        ShardReplica rep = shards.remove(shard);
         if (rep != null) {
             rep.stop();
-            events.emit("config", "dropped my replica of " + p.get("shard") + " (no longer assigned here)");
+            wipeShardFiles(shard);  // no longer hosting it → wipe, so a re-add starts clean
+            events.emit("config", "dropped + wiped my replica of " + shard + " (no longer assigned here)");
         }
         return resp("ok", true);
+    }
+
+    /** Delete a shard's on-disk state on this node (its MVCC/LSM data dir + its Raft log dir), so a
+     * fenced/dropped replica can't resurrect stale state on a later restart. */
+    private void wipeShardFiles(String shard) {
+        for (String sub : List.of("shard-" + shard + "-data", "shard-" + shard + "-raft")) {
+            deleteRecursively(new java.io.File(dataDir, sub));
+        }
+    }
+
+    private static void deleteRecursively(java.io.File f) {
+        if (!f.exists()) return;
+        java.io.File[] kids = f.listFiles();
+        if (kids != null) for (java.io.File k : kids) deleteRecursively(k);
+        f.delete();
     }
 
     @SuppressWarnings("unchecked")
@@ -185,6 +206,55 @@ public final class NodeServer {
         Thread t = new Thread(this::sweepLoop, "txn-sweep");
         t.setDaemon(true);
         t.start();
+        Thread f = new Thread(this::fenceLoop, "fence");
+        f.setDaemon(true);
+        f.start();
+    }
+
+    // ---- fencing — drop + wipe replicas this node is no longer a voter of ----
+
+    @SuppressWarnings("unchecked")
+    private Map<String, List<String>> pdPlacement() {
+        for (String n : ClusterConfig.PD_NODES) {
+            Map<String, Object> res = call(n, "pd_status", resp());
+            if (Boolean.TRUE.equals(res.get("ok")) && res.get("placement") instanceof Map) {
+                return (Map<String, List<String>>) res.get("placement");
+            }
+        }
+        return null;
+    }
+
+    private void fenceLoop() {
+        sleep(3000);  // let the PD elect and our own replicas come up first
+        while (running) {
+            try {
+                fenceOrphans();
+            } catch (RuntimeException e) {
+                events.emit("config", "fence error: " + e.getMessage());
+            }
+            sleep(2000);
+        }
+    }
+
+    private void fenceOrphans() {
+        Map<String, List<String>> placement = pdPlacement();
+        if (placement == null) return;  // PD unreachable — never fence on a guess
+        long now = System.currentTimeMillis();
+        for (String shard : new ArrayList<>(shards.keySet())) {
+            if (placement.getOrDefault(shard, List.of()).contains(nodeId)) {
+                orphanSince.remove(shard);
+                continue;
+            }
+            long first = orphanSince.computeIfAbsent(shard, k -> now);
+            if (now - first >= FENCE_AFTER_MS) {
+                orphanSince.remove(shard);
+                events.emit("config", "FENCING orphan replica of " + shard + ": the PD no longer lists "
+                        + "me as a voter → stopping and wiping it");
+                ShardReplica rep = shards.remove(shard);
+                if (rep != null) rep.stop();
+                wipeShardFiles(shard);
+            }
+        }
     }
 
     /** Drives in-doubt 2PC to completion. Prepared intents are replicated through each shard's Raft

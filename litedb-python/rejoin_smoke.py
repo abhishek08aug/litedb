@@ -106,6 +106,16 @@ def main():
             "cluster never stabilized after rejoin — a returning node is disrupting elections"
         assert all(client.get(f"key{i}") == f"val{i}" for i in range(12)), "data intact after rejoin"
 
+        # FENCING: the rejoined node must host only shards it's actually a voter of — its orphaned
+        # stale replicas (shards it was reaped from) must have been dropped + wiped, not left lingering.
+        time.sleep(6)  # let the fence loop run
+        placement = ctrl.placement
+        hosted = {sh["group"] for st in client.status() if st.get("node") == victim
+                  for sh in st.get("shards", [])}
+        orphans = {s for s in hosted if victim not in placement.get(s, [])}
+        assert not orphans, f"{victim} still hosts orphan replicas it isn't a voter of: {orphans}"
+        print(f"  {victim} hosts only shards it's a voter of {sorted(hosted)} — orphans fenced + wiped")
+
         print(f"\nREJOIN OK: {victim} restarted + re-added with stale replicas did NOT disrupt the "
               f"cluster (pre-vote refused its elections) — all {n_shards} shards keep a stable leader, "
               f"data intact.")

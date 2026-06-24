@@ -266,8 +266,11 @@ The control plane is not a SPOF.
 on disk (its `drop_shard` was skipped while it was dead). On restart those replicas try to resurrect,
 but **pre-vote** prevents them from disrupting: peers in the healthy group refuse the stale replica's
 pre-vote (they're hearing from their leader), so it can't bump the term. Shards it's a current voter of
-catch up via Raft; orphaned shards stay harmless. Re-adding the node (`+ Add node`) reintegrates it
-cleanly. Without pre-vote those stale replicas livelock elections and leave shards leaderless.
+catch up via Raft; orphaned shards stay harmless and a per-node **fence loop** then drops + **wipes**
+them (it deletes any local shard replica the PD no longer lists it as a voter of, removing both the
+MVCC data and the Raft log dirs). Re-adding the node (`+ Add node`) reintegrates it cleanly, hosting
+only the shards it's a current voter of. Without pre-vote those stale replicas livelock elections and
+leave shards leaderless.
 
 ---
 
@@ -281,7 +284,7 @@ cleanly. Without pre-vote those stale replicas livelock elections and leave shar
 | SQL = KV keys (catalog/rows/indexes) | one storage substrate for everything (the TiKV model) | joins / aggregates are out of scope |
 | Order-preserving typed encoding | numeric range scans work as byte ranges | per-type encoders to maintain |
 | Multi-raft (group per shard) | N leaders → parallel writes, balanced load | more moving parts than single-raft |
-| Pre-vote + leader stickiness | a removed/stale/partitioned replica can't bump the term & disrupt a healthy leader → clean rejoin | one extra round-trip per election; orphaned replicas linger (harmless) until fenced |
+| Pre-vote + leader stickiness, + fence-on-rejoin | a removed/stale/partitioned replica can't disrupt a healthy leader, and a fence loop drops + wipes replicas it's no longer a voter of → fully clean rejoin | one extra round-trip per election; fencing reads placement from the PD |
 | Consistent hashing | adding a shard remaps ~1/N keys | no range scans across shards; fixed shard set (no split/merge) |
 | 2PC for cross-shard atomicity | single Raft commit is atomic only within a shard | blocking protocol; parallel-commit would cut latency |
 | HLC for commit timestamps | cross-shard snapshots need a global clock | needs bounded clock skew across machines (NTP / TrueTime) |

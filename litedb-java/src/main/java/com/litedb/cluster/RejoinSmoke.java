@@ -61,6 +61,16 @@ public class RejoinSmoke {
         return null;
     }
 
+    @SuppressWarnings("unchecked")
+    static Set<String> hostedBy(ClusterClient client, String node) {
+        Set<String> out = new java.util.HashSet<>();
+        for (Map<String, Object> st : client.status()) {
+            if (!node.equals(st.get("node")) || st.get("shards") == null) continue;
+            for (Object so : (List<Object>) st.get("shards")) out.add((String) ((Map<String, Object>) so).get("group"));
+        }
+        return out;
+    }
+
     static void waitUntil(java.util.function.BooleanSupplier c, long ms, String what) throws Exception {
         long deadline = System.currentTimeMillis() + ms;
         while (System.currentTimeMillis() < deadline) { if (c.getAsBoolean()) return; Thread.sleep(250); }
@@ -106,6 +116,18 @@ public class RejoinSmoke {
             }
             if (streak < 5) throw new AssertionError("cluster never stabilized after rejoin — a returning node is disrupting elections");
             for (int i = 0; i < 12; i++) if (!("val" + i).equals(client.get("key" + i))) throw new AssertionError("data lost after rejoin");
+
+            // FENCING: the rejoined node must host only shards it's a voter of — its orphaned stale
+            // replicas (shards it was reaped from) must have been dropped + wiped, not left lingering.
+            Thread.sleep(6000);
+            Map<String, List<String>> placement = ctrl.placement();
+            Set<String> hosted = hostedBy(client, dead);
+            for (String s : hosted) {
+                if (!placement.getOrDefault(s, List.of()).contains(dead)) {
+                    throw new AssertionError(dead + " still hosts orphan replica of " + s + " it isn't a voter of");
+                }
+            }
+            System.out.println("  " + dead + " hosts only shards it's a voter of " + hosted + " — orphans fenced + wiped");
 
             System.out.println("\nREJOIN OK (Java): " + dead + " restarted + re-added with stale replicas did NOT "
                     + "disrupt the cluster (pre-vote refused its elections) — all " + nShards + " shards keep a "
